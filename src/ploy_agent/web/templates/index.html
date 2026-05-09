@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="refresh" content="{{ refresh_sec }}"/>
+  <title>Polymarket Edge Agent</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d9eff;
+      --pos: #3ecf8e;
+      --neg: #f07178;
+      --border: #2a3545;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.25rem 1.5rem 3rem;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.25rem; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+    }
+    .metric .v { font-size: 1.25rem; font-weight: 600; }
+    .metric .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    section {
+      margin-bottom: 2rem;
+    }
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.35rem;
+      margin: 0 0 0.75rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    th, td {
+      text-align: left;
+      padding: 0.5rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      background: #141c28;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    tr:last-child td { border-bottom: none; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+    .edge-pos { color: var(--pos); font-weight: 600; }
+    .edge-neg { color: var(--neg); font-weight: 600; }
+    .pick-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+    }
+    .pick-card h3 { margin: 0 0 0.35rem; font-size: 0.95rem; font-weight: 600; }
+    .pick-meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.5rem; }
+    .reason { font-size: 0.85rem; color: #c5d0de; white-space: pre-wrap; }
+    .empty { color: var(--muted); font-style: italic; }
+    .badge {
+      display: inline-block;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      background: #243044;
+      color: var(--accent);
+      margin-right: 0.35rem;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <h1>Polymarket Edge Agent</h1>
+  <p class="sub">Live ranking (refreshes every {{ refresh_sec }}s). Configure strategies via <span class="mono">AGENT_STRATEGIES</span>. Run <span class="mono">ploy-ingest</span>, <span class="mono">ploy-enrich</span>, <span class="mono">ploy-reason</span>, optional <span class="mono">ploy-notify</span>.</p>
+
+  <div class="metrics">
+    <div class="metric"><div class="k">Markets</div><div class="v">{{ stats.markets }}</div></div>
+    <div class="metric"><div class="k">Prices</div><div class="v">{{ stats.prices }}</div></div>
+    <div class="metric"><div class="k">Game state</div><div class="v">{{ stats.game_state }}</div></div>
+    <div class="metric"><div class="k">Fair values</div><div class="v">{{ stats.fair_values }}</div></div>
+    <div class="metric"><div class="k">Recommendations</div><div class="v">{{ stats.recommendations }}</div></div>
+    <div class="metric"><div class="k">Brier vs mid</div><div class="v">{% if stats.brier_vs_market is not none %}{{ "%.4f"|format(stats.brier_vs_market) }}{% else %}n/a{% endif %}</div></div>
+  </div>
+
+  <section>
+    <h2>Current ranked edges</h2>
+    {% if picks %}
+      {% for p in picks %}
+      <div class="pick-card">
+        <h3><span class="badge">{{ p.strategy_id }}</span>{{ p.question or "(no question)" }}</h3>
+        <div class="pick-meta mono">{{ p.market_id }}</div>
+        <div class="pick-meta">
+          Mid {{ "%.3f"|format(p.mid) }} · Model {{ "%.3f"|format(p.model_prob) }} ·
+          {% if p.edge_cents >= 0 %}<span class="edge-pos">+{{ "%.1f"|format(p.edge_cents) }}¢</span>{% else %}<span class="edge-neg">{{ "%.1f"|format(p.edge_cents) }}¢</span>{% endif %}
+          · Conf {{ "%.2f"|format(p.confidence) }} · Score {{ "%.3f"|format(p.score) }}
+          · Depth₁¢ {{ "%.1f"|format(p.depth_1c) }}
+        </div>
+        <div class="reason">{{ p.reasoning }}</div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No ranked picks yet — need mapped NBA markets, live game state, and fair_values rows.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Live games (latest snapshot)</h2>
+    {% if game_rows %}
+    <table>
+      <thead><tr><th>Updated</th><th>Game</th><th>Score</th><th>Period</th><th>Clock</th></tr></thead>
+      <tbody>
+        {% for g in game_rows %}
+        <tr>
+          <td class="mono">{{ g.ts }}</td>
+          <td>{{ g.away_team }} @ {{ g.home_team }}</td>
+          <td class="mono">{{ g.away_score }}–{{ g.home_score }}</td>
+          <td>{{ g.period or "—" }}</td>
+          <td>{{ g.time_remaining or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No game_state rows — run ploy-enrich (ESPN by default).</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Recent fair values</h2>
+    {% if fair_rows %}
+    <table>
+      <thead><tr><th>Time</th><th>Strategy</th><th>Market</th><th>Model</th><th>Mid</th><th>Edge ¢</th><th>Conf</th><th>Reasoning</th></tr></thead>
+      <tbody>
+        {% for f in fair_rows %}
+        <tr>
+          <td class="mono">{{ f.ts }}</td>
+          <td><span class="badge">{{ f.strategy_id }}</span></td>
+          <td><span class="mono">{{ f.market_id }}</span><br/><small>{{ f.question or "" }}</small></td>
+          <td class="mono">{{ "%.3f"|format(f.model_prob) }}</td>
+          <td class="mono">{{ "%.3f"|format(f.market_prob) }}</td>
+          <td class="mono">{{ "%.1f"|format(f.edge_cents) }}</td>
+          <td class="mono">{{ "%.2f"|format(f.confidence) }}</td>
+          <td>{{ f.reasoning or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No fair_values yet.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Recommendation history</h2>
+    {% if rec_rows %}
+    <table>
+      <thead><tr><th>ID</th><th>Time</th><th>Strategy</th><th>Market</th><th>Score</th><th>Status</th><th>Payload</th></tr></thead>
+      <tbody>
+        {% for r in rec_rows %}
+        <tr>
+          <td class="mono">{{ r.id }}</td>
+          <td class="mono">{{ r.ts }}</td>
+          <td>{{ r.strategy_id or "—" }}</td>
+          <td class="mono">{{ r.market_id }}</td>
+          <td class="mono">{{ "%.3f"|format(r.score) }}</td>
+          <td>{{ r.status }}</td>
+          <td class="mono"><small>{{ r.payload_json }}</small></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No persisted recommendations — run ploy-notify or rely on “Current ranked edges” above.</p>
+    {% endif %}
+  </section>
+</body>
+</html>

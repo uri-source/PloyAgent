@@ -1,0 +1,7 @@
+{
+  "intercept": 0.0,
+  "coef_diff": 0.08,
+  "coef_time": -1.2,
+  "coef_poss": 0.15,
+  "regulation_seconds": 2880
+}
