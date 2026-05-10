@@ -18,7 +18,7 @@ def composite_score(
     confidence: float,
     hours_to_resolution: float,
 ) -> float:
-    return edge_cents_val * math.log1p(max(depth_1c, 0.0)) * confidence * time_factor_hours(
+    return abs(edge_cents_val) * math.log1p(max(depth_1c, 0.0)) * confidence * time_factor_hours(
         hours_to_resolution
     )
 

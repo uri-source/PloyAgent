@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8765, alias="WEB_PORT")
 
+    slack_bot_token: str = Field(default="", alias="SLACK_BOT_TOKEN")
+    slack_channel: str = Field(default="", alias="SLACK_CHANNEL")
+    slack_events_port: int = Field(default=8766, alias="SLACK_EVENTS_PORT")
+
     log_json: bool = Field(default=False, alias="LOG_JSON")
 
     @field_validator("agent_strategies", mode="before")

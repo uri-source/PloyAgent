@@ -38,7 +38,7 @@ async def _hydrate_last_mid(pool: Any) -> dict[str, float]:
 
 async def _candidate_markets(pool: Any) -> list[str]:
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        in_game = await conn.fetch(
             """
             SELECT DISTINCT mg.market_id
             FROM market_game_map mg
@@ -49,7 +49,33 @@ async def _candidate_markets(pool: Any) -> list[str]:
             ) gs ON true
             """
         )
-    return [str(r["market_id"]) for r in rows]
+        futures = await conn.fetch(
+            """
+            SELECT m.id AS market_id
+            FROM markets m
+            JOIN LATERAL (
+              SELECT 1 FROM prices
+              WHERE market_id = m.id AND mid IS NOT NULL
+              ORDER BY ts DESC LIMIT 1
+            ) lp ON true
+            LEFT JOIN market_game_map mg ON mg.market_id = m.id
+            WHERE m.status IS DISTINCT FROM 'closed'
+              AND mg.market_id IS NULL
+            """
+        )
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in in_game:
+        mid = str(r["market_id"])
+        if mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    for r in futures:
+        mid = str(r["market_id"])
+        if mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out
 
 
 async def _evaluate_market(
@@ -91,7 +117,7 @@ async def _evaluate_market(
 
         gs = await repo.latest_market_game_state(conn, market_id)
         if not gs:
-            return
+            gs = {}
 
         ctx = StrategyContext(conn=conn, market_id=market_id, mrow=mrow, mid=mid, game_state=gs, model=model, http=http)
 
