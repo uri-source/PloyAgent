@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ploy_agent.common.config import settings
 from ploy_agent.common.scoring import edge_cents as calc_edge
@@ -23,6 +23,9 @@ class PlayerAdjustStrategy(Strategy):
     id: ClassVar[str] = "player_adjust"
 
     async def run(self, ctx: StrategyContext) -> StrategyResult | None:
+        cat = str(ctx.mrow.get("category") or "").strip().lower()
+        if cat not in settings.baseline_model_category_set():
+            return None
         gid = str(ctx.game_state.get("game_id") or "")
         if not gid:
             return None

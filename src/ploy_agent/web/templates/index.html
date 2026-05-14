@@ -103,11 +103,76 @@
       margin-right: 0.35rem;
       vertical-align: middle;
     }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .status-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 0.85rem;
+    }
+    .status-card .row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0;
+    }
+    .status-ok .status-dot { background: var(--pos); box-shadow: 0 0 8px rgba(62, 207, 142, 0.45); }
+    .status-warn .status-dot { background: #e7c547; box-shadow: 0 0 8px rgba(231, 197, 71, 0.35); }
+    .status-bad .status-dot { background: var(--neg); box-shadow: 0 0 8px rgba(240, 113, 120, 0.4); }
+    .status-unknown .status-dot { background: var(--muted); }
+    .status-label { font-weight: 600; font-size: 0.88rem; }
+    .status-detail { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+    .log-panel {
+      background: #0a0e14;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      max-height: 320px;
+      overflow: auto;
+    }
+    .log-panel pre {
+      margin: 0;
+      font-size: 0.72rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #b8c5d6;
+    }
+    .log-meta { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; }
   </style>
 </head>
 <body>
   <h1>Polymarket Edge Agent</h1>
   <p class="sub">Live ranking (refreshes every {{ refresh_sec }}s). Configure strategies via <span class="mono">AGENT_STRATEGIES</span>. Run <span class="mono">ploy-ingest</span>, <span class="mono">ploy-enrich</span>, <span class="mono">ploy-reason</span>, optional <span class="mono">ploy-notify</span>.</p>
+
+  <section>
+    <h2>Pipeline status</h2>
+    <p class="log-meta">Heuristic freshness from the database (not OS process monitoring). Green = recent writes; adjust thresholds in <span class="mono">web/app.py</span> if needed.</p>
+    <div class="status-grid">
+      {% for s in pipeline_status %}
+      <div class="status-card status-{{ s.level }}">
+        <div class="row"><span class="status-dot"></span><span class="status-label mono">{{ s.label }}</span></div>
+        <div class="status-detail">{{ s.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Service log (tail)</h2>
+    <p class="log-meta">Shared file <span class="mono">{{ log_path_display }}</span> — filled when workers run with default logging (ingest, enrich, reason, notify).</p>
+    <div class="log-panel">
+      {% if log_lines %}
+      <pre>{% for line in log_lines %}{{ line }}
+{% endfor %}</pre>
+      {% else %}
+      <pre class="empty">No log file yet. Start <span class="mono">ploy-ingest</span> / <span class="mono">ploy-enrich</span> from the project directory so lines append here, or set <span class="mono">AGENT_LOG_FILE</span>.</pre>
+      {% endif %}
+    </div>
+  </section>
 
   <div class="metrics">
     <div class="metric"><div class="k">Markets</div><div class="v">{{ stats.markets }}</div></div>
@@ -135,7 +200,32 @@
       </div>
       {% endfor %}
     {% else %}
-      <p class="empty">No ranked picks yet — need mapped NBA markets, live game state, and fair_values rows.</p>
+      <p class="empty">No ranked picks yet — need mapped in-game markets, live game state, and fair_values rows.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Latest lines (price ticks)</h2>
+    <p class="log-meta">Recent rows from <span class="mono">prices</span> joined to <span class="mono">markets.category</span> (e.g. nba, mlb).</p>
+    {% if price_ticks %}
+    <table>
+      <thead><tr><th>Time</th><th>Cat</th><th>Mid</th><th>Bid</th><th>Ask</th><th>Depth₁¢</th><th>Market</th></tr></thead>
+      <tbody>
+        {% for p in price_ticks %}
+        <tr>
+          <td class="mono">{{ p.ts }}</td>
+          <td><span class="badge">{{ p.category or "—" }}</span></td>
+          <td class="mono">{% if p.mid is not none %}{{ "%.3f"|format(p.mid) }}{% else %}—{% endif %}</td>
+          <td class="mono">{% if p.bid is not none %}{{ "%.3f"|format(p.bid) }}{% else %}—{% endif %}</td>
+          <td class="mono">{% if p.ask is not none %}{{ "%.3f"|format(p.ask) }}{% else %}—{% endif %}</td>
+          <td class="mono">{% if p.depth_1c is not none %}{{ "%.1f"|format(p.depth_1c) }}{% else %}—{% endif %}</td>
+          <td><span class="mono">{{ p.market_id }}</span><br/><small>{{ p.question or "" }}</small></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No price ticks yet — run <span class="mono">ploy-ingest</span> so the WebSocket stream writes to <span class="mono">prices</span>.</p>
     {% endif %}
   </section>
 

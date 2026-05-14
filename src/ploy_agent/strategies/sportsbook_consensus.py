@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from ploy_agent.common.config import settings
+from ploy_agent.common.odds_sports import odds_sport_key_for_category
 from ploy_agent.common.scoring import edge_cents as calc_edge
 from ploy_agent.reasoning.model import align_prob_to_yes
 from ploy_agent.strategies.base import Strategy
@@ -27,7 +28,9 @@ class SportsbookConsensusStrategy(Strategy):
     id: ClassVar[str] = "sportsbook_consensus"
     requires: ClassVar[frozenset[str]] = frozenset({"odds_api"})
 
-    def _match_event(self, games: list[dict[str, Any]], gs: dict[str, Any]) -> dict[str, Any] | None:
+    def _match_event(
+        self, games: list[dict[str, Any]], gs: dict[str, Any]
+    ) -> dict[str, Any] | None:
         ht = norm_team(str(gs.get("home_team") or ""))
         at = norm_team(str(gs.get("away_team") or ""))
         if len(ht) < 3 or len(at) < 3:
@@ -41,7 +44,9 @@ class SportsbookConsensusStrategy(Strategy):
                 return g
         return None
 
-    def _weighted_home_prob(self, event: dict[str, Any]) -> tuple[float | None, list[dict[str, Any]]]:
+    def _weighted_home_prob(
+        self, event: dict[str, Any]
+    ) -> tuple[float | None, list[dict[str, Any]]]:
         home_name = str(event.get("home_team") or "")
         away_name = str(event.get("away_team") or "")
         weights = settings.sharp_book_weights()
@@ -79,8 +84,11 @@ class SportsbookConsensusStrategy(Strategy):
     async def run(self, ctx: StrategyContext) -> StrategyResult | None:
         if not settings.odds_api_key:
             return None
+        sport_key = odds_sport_key_for_category(ctx.mrow.get("category"))
+        if not sport_key:
+            return None
         regions = settings.sportsbook_regions.replace(" ", "")
-        url = f"{settings.odds_api_base.rstrip('/')}/sports/basketball_nba/odds"
+        url = f"{settings.odds_api_base.rstrip('/')}/sports/{sport_key}/odds"
         r = await ctx.http.get(
             url,
             params={

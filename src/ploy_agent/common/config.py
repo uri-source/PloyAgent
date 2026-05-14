@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +21,32 @@ class Settings(BaseSettings):
         default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
         alias="POLY_WS_URL",
     )
-    poly_nba_tags: str = Field(default="nba", alias="POLY_NBA_TAGS")
+    poly_gamma_tags: str = Field(
+        default="",
+        alias="POLY_GAMMA_TAGS",
+        description="Comma-separated Gamma tag slugs or ids; if empty, POLY_NBA_TAGS is used",
+    )
+    poly_nba_tags: str = Field(
+        default="nba",
+        alias="POLY_NBA_TAGS",
+        description="Deprecated alias for discovery tags when POLY_GAMMA_TAGS is unset",
+    )
+
+    enrichment_espn_leagues: str = Field(
+        default="nba",
+        alias="ENRICHMENT_ESPN_LEAGUES",
+        description="Comma-separated league keys for ESPN scoreboards (e.g. nba,mlb)",
+    )
+    enrichment_odds_leagues: str = Field(
+        default="basketball_nba",
+        alias="ENRICHMENT_ODDS_LEAGUES",
+        description="Comma-separated The Odds API sport keys for scores (e.g. basketball_nba,baseball_mlb)",
+    )
+    baseline_model_categories: str = Field(
+        default="nba",
+        alias="BASELINE_MODEL_CATEGORIES",
+        description="Comma-separated market categories (Gamma) where baseline/player_adjust run",
+    )
 
     sports_provider: str = Field(default="espn", alias="SPORTS_PROVIDER")
     odds_api_key: str = Field(default="", alias="ODDS_API_KEY")
@@ -65,6 +91,12 @@ class Settings(BaseSettings):
 
     log_json: bool = Field(default=False, alias="LOG_JSON")
 
+    agent_log_file: Path = Field(
+        default=Path("artifacts/agent.log"),
+        alias="AGENT_LOG_FILE",
+        description="Append-only shared log (ingest/enrich/reason tail this path for the dashboard)",
+    )
+
     @field_validator("agent_strategies", mode="before")
     @classmethod
     def _strip_strategies(cls, v: object) -> object:
@@ -74,6 +106,26 @@ class Settings(BaseSettings):
 
     def strategy_ids(self) -> list[str]:
         return [s.strip() for s in self.agent_strategies.split(",") if s.strip()]
+
+    def discovery_tag_csv(self) -> str:
+        """Polymarket Gamma tag list for market discovery."""
+        g = self.poly_gamma_tags.strip()
+        if g:
+            return g
+        return self.poly_nba_tags.strip() or "nba"
+
+    def enrichment_espn_league_keys(self) -> list[str]:
+        keys = [x.strip().lower() for x in self.enrichment_espn_leagues.split(",") if x.strip()]
+        return keys or ["nba"]
+
+    def enrichment_odds_sport_keys(self) -> list[str]:
+        keys = [x.strip().lower() for x in self.enrichment_odds_leagues.split(",") if x.strip()]
+        return keys or ["basketball_nba"]
+
+    def baseline_model_category_set(self) -> frozenset[str]:
+        return frozenset(
+            x.strip().lower() for x in self.baseline_model_categories.split(",") if x.strip()
+        ) or frozenset({"nba"})
 
     def sharp_book_weights(self) -> dict[str, float]:
         out: dict[str, float] = {}

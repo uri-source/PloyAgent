@@ -28,13 +28,14 @@ async def fetch_sports_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-async def discover_nba_markets(client: httpx.AsyncClient) -> list[dict[str, Any]]:
+async def discover_markets_by_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     """
-    Pull active NBA-tagged markets from Gamma.
-    Uses POLY_NBA_TAGS (comma-separated slugs or numeric ids).
+    Pull active markets from Gamma for each configured tag.
+    Uses POLY_GAMMA_TAGS, or POLY_NBA_TAGS if POLY_GAMMA_TAGS is empty
+    (comma-separated slugs or numeric ids).
     """
     base = settings.gamma_base_url.rstrip("/")
-    tags = [t.strip() for t in settings.poly_nba_tags.split(",") if t.strip()]
+    tags = [t.strip() for t in settings.discovery_tag_csv().split(",") if t.strip()]
     markets_out: list[dict[str, Any]] = []
     seen: set[str] = set()
 

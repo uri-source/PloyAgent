@@ -34,7 +34,7 @@ def confidence_and_reasoning(
             {
                 "role": "user",
                 "content": (
-                    "You assess an NBA Polymarket edge. A separate model already computed "
+                    "You assess a sports Polymarket edge. A separate model already computed "
                     f"model_prob={model_prob:.4f} vs market_prob={market_prob:.4f} "
                     f"(edge_cents={edge_cents:.2f}).\n"
                     "Return JSON ONLY: {\"confidence\":0-1,\"reasoning\":\"...\","

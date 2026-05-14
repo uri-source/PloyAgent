@@ -4,6 +4,14 @@ from typing import Any
 
 import httpx
 
+from ploy_agent.enrichment.sports import ESPN_LEAGUE_PATHS
+
+
+def _summary_url(league_key: str) -> str:
+    lk = (league_key or "nba").strip().lower()
+    path = ESPN_LEAGUE_PATHS.get(lk) or ESPN_LEAGUE_PATHS["nba"]
+    return f"https://site.api.espn.com/apis/site/v2/sports/{path}/summary"
+
 
 def _names_from_roster(roster: Any) -> list[str]:
     out: list[str] = []
@@ -21,9 +29,11 @@ def _names_from_roster(roster: Any) -> list[str]:
     return out
 
 
-async def fetch_roster_names(client: httpx.AsyncClient, game_id: str) -> tuple[list[str], list[str]]:
+async def fetch_roster_names(
+    client: httpx.AsyncClient, game_id: str, *, league_key: str = "nba"
+) -> tuple[list[str], list[str]]:
     """Best-effort active roster names from ESPN summary (may be empty)."""
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
+    url = _summary_url(league_key)
     try:
         r = await client.get(url, params={"event": game_id}, timeout=25.0)
         r.raise_for_status()

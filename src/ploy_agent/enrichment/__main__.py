@@ -77,7 +77,7 @@ async def _tick(pool, client: httpx.AsyncClient) -> None:
 
             if gid not in seen_games:
                 seen_games.add(gid)
-                hn, an = await fetch_roster_names(client, gid)
+                hn, an = await fetch_roster_names(client, gid, league_key=game.espn_summary_league_key())
                 if hn or an:
                     await erepo.insert_game_lineups(conn, game_id=gid, home_active=hn, away_active=an)
 

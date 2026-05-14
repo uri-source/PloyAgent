@@ -15,6 +15,9 @@ class BaselineModelStrategy(Strategy):
     id: ClassVar[str] = "baseline_model"
 
     async def run(self, ctx: StrategyContext) -> StrategyResult | None:
+        cat = str(ctx.mrow.get("category") or "").strip().lower()
+        if cat not in settings.baseline_model_category_set():
+            return None
         gs = ctx.game_state
         home_team = str(gs.get("home_team") or "")
         away_team = str(gs.get("away_team") or "")
