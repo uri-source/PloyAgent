@@ -5,6 +5,8 @@ from ploy_agent.common.logging_config import get_logger
 from ploy_agent.strategies.base import Strategy
 from ploy_agent.strategies.baseline_model import BaselineModelStrategy
 from ploy_agent.strategies.behavior_fade import BehaviorFadeStrategy
+from ploy_agent.strategies.book_imbalance import BookImbalanceStrategy
+from ploy_agent.strategies.consensus import ConsensusStrategy
 from ploy_agent.strategies.cross_market_arb import CrossMarketArbStrategy
 from ploy_agent.strategies.player_adjust import PlayerAdjustStrategy
 from ploy_agent.strategies.sportsbook_consensus import SportsbookConsensusStrategy
@@ -19,6 +21,8 @@ STRATEGIES: dict[str, Strategy] = {
     CrossMarketArbStrategy.id: CrossMarketArbStrategy(),
     BehaviorFadeStrategy.id: BehaviorFadeStrategy(),
     PlayerAdjustStrategy.id: PlayerAdjustStrategy(),
+    BookImbalanceStrategy.id: BookImbalanceStrategy(),
+    ConsensusStrategy.id: ConsensusStrategy(),
 }
 
 

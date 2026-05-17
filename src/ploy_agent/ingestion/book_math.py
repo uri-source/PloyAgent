@@ -13,7 +13,8 @@ def _f(x: Any) -> float:
 def best_bid_ask_from_book(
     bids: list[dict[str, Any]], asks: list[dict[str, Any]]
 ) -> tuple[float | None, float | None]:
-    best_bid = max((_f(b.get("price")) for b in bids), default=None)
+    best_bid_list = [_f(b.get("price")) for b in bids if _f(b.get("price")) > 0]
+    best_bid = max(best_bid_list) if best_bid_list else None
     best_ask_list = [_f(a.get("price")) for a in asks if _f(a.get("price")) > 0]
     best_ask = min(best_ask_list) if best_ask_list else None
     if best_bid is None and best_ask is None:

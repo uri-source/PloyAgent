@@ -16,6 +16,8 @@ class StrategyContext:
     game_state: dict[str, Any]
     model: dict[str, Any]
     http: httpx.AsyncClient
+    depth_1c: float = 0.0
+    spread: float | None = None
 
 
 @dataclass

@@ -21,6 +21,17 @@ def heuristic_resolution_safe(text: str | None) -> tuple[bool, str]:
     return True, "heuristic_ok"
 
 
+_anthropic_client = None
+
+
+def _get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
+
 def resolution_gate(text: str | None) -> tuple[bool, str]:
     """Heuristic + optional Anthropic classification (sync)."""
     safe, reason = heuristic_resolution_safe(text)
@@ -29,9 +40,7 @@ def resolution_gate(text: str | None) -> tuple[bool, str]:
     if not settings.anthropic_api_key:
         return safe, reason
     try:
-        import anthropic
-
-        ac = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        ac = _get_anthropic()
         msg = ac.messages.create(
             model=settings.anthropic_model,
             max_tokens=200,

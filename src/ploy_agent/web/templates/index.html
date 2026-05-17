@@ -181,7 +181,7 @@
     <div class="metric"><div class="k">Game state</div><div class="v">{{ stats.game_state }}</div></div>
     <div class="metric"><div class="k">Fair values</div><div class="v">{{ stats.fair_values }}</div></div>
     <div class="metric"><div class="k">Recommendations</div><div class="v">{{ stats.recommendations }}</div></div>
-    <div class="metric"><div class="k">Brier vs mid</div><div class="v">{% if stats.brier_vs_market is not none %}{{ "%.4f"|format(stats.brier_vs_market) }}{% else %}n/a{% endif %}</div></div>
+    <div class="metric"><div class="k">Model ↔ Market</div><div class="v">{% if stats.brier_vs_market is not none %}{{ "%.4f"|format(stats.brier_vs_market) }}{% else %}n/a{% endif %}</div></div>
   </div>
 
   <section>
@@ -316,6 +316,33 @@
     </div>
   </section>
 
+  <!-- Accuracy Tracking -->
+  <section>
+    <h2>Model accuracy (Brier scores)</h2>
+    <p class="log-meta">Lower Brier = better calibration (0=perfect, 0.25=coin flip). "Edge vs Market" &gt; 0 means model beats the market.</p>
+    <div id="accuracy-summary" class="metrics" style="margin-bottom:1rem">
+      <div class="metric"><div class="k">Model Brier</div><div class="v" id="acc-model-brier">—</div></div>
+      <div class="metric"><div class="k">Market Brier</div><div class="v" id="acc-market-brier">—</div></div>
+      <div class="metric"><div class="k">Edge vs Market</div><div class="v" id="acc-edge">—</div></div>
+      <div class="metric"><div class="k">Resolved</div><div class="v" id="acc-resolved">—</div></div>
+    </div>
+    <div id="accuracy-strategies"></div>
+    <div id="accuracy-empty" class="empty" style="display:none"></div>
+  </section>
+
+  <!-- Calibration Curve -->
+  <section>
+    <h2>Calibration curve</h2>
+    <p class="log-meta">Perfect calibration = diagonal line. Points above = model underconfident. Points below = model overconfident.</p>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap">
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1rem;flex:1;min-width:300px;min-height:220px">
+        <canvas id="calCanvas" style="width:100%;height:200px"></canvas>
+      </div>
+      <div id="cal-table" style="flex:1;min-width:250px"></div>
+    </div>
+    <div id="cal-empty" class="empty" style="display:none"></div>
+  </section>
+
   <!-- Real-time event log -->
   <section>
     <h2>Live feed <span id="sse-status" style="font-size:0.7rem;color:var(--pos)">● connected</span></h2>
@@ -436,6 +463,155 @@
     }
     loadPnl();
     setInterval(loadPnl, 30000); // refresh P&L every 30s
+  })();
+
+  // ---------- Accuracy Data ----------
+  (function() {
+    async function loadAccuracy() {
+      try {
+        const r = await fetch('/api/accuracy');
+        const d = await r.json();
+        const emptyEl = document.getElementById('accuracy-empty');
+        const stratEl = document.getElementById('accuracy-strategies');
+
+        if (!d.has_data) {
+          emptyEl.textContent = d.message || 'No resolved markets yet.';
+          emptyEl.style.display = 'block';
+          // Still show model-vs-market Brier if available
+          if (d.overall_brier_vs_market !== null) {
+            document.getElementById('acc-model-brier').textContent = d.overall_brier_vs_market.toFixed(4) + ' (vs market)';
+          }
+          return;
+        }
+        emptyEl.style.display = 'none';
+
+        const t = d.totals;
+        document.getElementById('acc-model-brier').textContent = t.brier_model !== null ? t.brier_model.toFixed(4) : '—';
+        document.getElementById('acc-market-brier').textContent = t.brier_market !== null ? t.brier_market.toFixed(4) : '—';
+
+        const edgeEl = document.getElementById('acc-edge');
+        if (t.edge_vs_market !== null) {
+          const sign = t.edge_vs_market >= 0 ? '+' : '';
+          edgeEl.textContent = sign + t.edge_vs_market.toFixed(4);
+          edgeEl.style.color = t.edge_vs_market >= 0 ? 'var(--pos)' : 'var(--neg)';
+        }
+        document.getElementById('acc-resolved').textContent = t.n;
+
+        // Strategy breakdown table
+        if (d.strategies && d.strategies.length > 0) {
+          let html = '<table><thead><tr><th>Strategy</th><th>N</th><th>Model Brier</th><th>Market Brier</th><th>Edge</th><th>Accuracy</th></tr></thead><tbody>';
+          d.strategies.forEach(s => {
+            const edgeColor = s.edge_vs_market >= 0 ? 'var(--pos)' : 'var(--neg)';
+            const edgeSign = s.edge_vs_market >= 0 ? '+' : '';
+            html += `<tr>
+              <td class="mono">${s.strategy_id}</td>
+              <td>${s.n}</td>
+              <td class="mono">${s.brier_model.toFixed(4)}</td>
+              <td class="mono">${s.brier_market.toFixed(4)}</td>
+              <td class="mono" style="color:${edgeColor}">${edgeSign}${s.edge_vs_market.toFixed(4)}</td>
+              <td class="mono">${s.accuracy_pct.toFixed(1)}%</td>
+            </tr>`;
+          });
+          html += '</tbody></table>';
+          stratEl.innerHTML = html;
+        }
+      } catch(e) { /* silent */ }
+    }
+    loadAccuracy();
+    setInterval(loadAccuracy, 60000); // refresh accuracy every 60s
+  })();
+
+  // ---------- Calibration Curve ----------
+  (function() {
+    async function loadCalibration() {
+      try {
+        const r = await fetch('/api/calibration');
+        const d = await r.json();
+        const emptyEl = document.getElementById('cal-empty');
+        const tableEl = document.getElementById('cal-table');
+
+        if (!d.has_data) {
+          emptyEl.textContent = 'No resolved markets yet for calibration.';
+          emptyEl.style.display = 'block';
+          return;
+        }
+        emptyEl.style.display = 'none';
+
+        // Draw calibration chart
+        const canvas = document.getElementById('calCanvas');
+        if (canvas && d.buckets.length > 0) {
+          const ctx = canvas.getContext('2d');
+          const W = canvas.offsetWidth; const H = 200;
+          canvas.width = W; canvas.height = H;
+          const pad = 30;
+          const pw = W - pad * 2; const ph = H - pad * 2;
+
+          ctx.clearRect(0, 0, W, H);
+
+          // Diagonal (perfect calibration)
+          ctx.strokeStyle = 'rgba(139,156,179,0.3)';
+          ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+          ctx.beginPath();
+          ctx.moveTo(pad, pad + ph);
+          ctx.lineTo(pad + pw, pad);
+          ctx.stroke(); ctx.setLineDash([]);
+
+          // Model calibration line
+          ctx.strokeStyle = '#3d9eff'; ctx.lineWidth = 2;
+          ctx.beginPath();
+          d.buckets.forEach((b, i) => {
+            const x = pad + b.avg_predicted * pw;
+            const y = pad + ph - b.actual_rate * ph;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+
+          // Dots
+          d.buckets.forEach(b => {
+            const x = pad + b.avg_predicted * pw;
+            const y = pad + ph - b.actual_rate * ph;
+            ctx.fillStyle = '#3d9eff';
+            ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+            // N label
+            ctx.fillStyle = 'var(--muted)'; ctx.font = '10px sans-serif';
+            ctx.fillText('n=' + b.n, x + 6, y - 4);
+          });
+
+          // Market calibration (if available)
+          if (d.buckets[0].market_predicted !== undefined) {
+            ctx.strokeStyle = 'rgba(240,113,120,0.6)'; ctx.lineWidth = 1.5;
+            ctx.setLineDash([3,3]);
+            ctx.beginPath();
+            d.buckets.forEach((b, i) => {
+              const x = pad + b.market_predicted * pw;
+              const y = pad + ph - b.actual_rate * ph;
+              i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            });
+            ctx.stroke(); ctx.setLineDash([]);
+          }
+
+          // Axis labels
+          ctx.fillStyle = 'var(--muted)'; ctx.font = '11px sans-serif';
+          ctx.fillText('Predicted', W/2 - 25, H - 2);
+          ctx.save(); ctx.translate(10, H/2 + 15); ctx.rotate(-Math.PI/2);
+          ctx.fillText('Actual', 0, 0); ctx.restore();
+        }
+
+        // Table
+        if (d.buckets.length > 0) {
+          let html = '<table><thead><tr><th>Bucket</th><th>N</th><th>Predicted</th><th>Actual</th><th>Gap</th></tr></thead><tbody>';
+          d.buckets.forEach(b => {
+            const gap = b.avg_predicted - b.actual_rate;
+            const gapColor = Math.abs(gap) < 0.05 ? 'var(--pos)' : Math.abs(gap) < 0.1 ? '#e7c547' : 'var(--neg)';
+            html += `<tr><td class="mono">${b.range}</td><td>${b.n}</td><td class="mono">${b.avg_predicted.toFixed(3)}</td><td class="mono">${b.actual_rate.toFixed(3)}</td><td class="mono" style="color:${gapColor}">${gap >= 0 ? '+' : ''}${gap.toFixed(3)}</td></tr>`;
+          });
+          html += '</tbody></table>';
+          tableEl.innerHTML = html;
+        }
+      } catch(e) { /* silent */ }
+    }
+    loadCalibration();
+    setInterval(loadCalibration, 120000);
   })();
   </script>
 </body>

@@ -55,6 +55,8 @@ class BaselineModelStrategy(Strategy):
             market_prob=mid,
             edge_cents=edge,
             game_summary=summary,
+            depth_1c=ctx.depth_1c,
+            spread=ctx.spread,
         )
         return StrategyResult(
             model_prob=p_yes,

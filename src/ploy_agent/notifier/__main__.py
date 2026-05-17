@@ -6,39 +6,53 @@ import signal
 
 import httpx
 
+from ploy_agent.common.adaptive_edge import adaptive_min_edge
 from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
+from ploy_agent.common.kelly import kelly_display
 from ploy_agent.common.logging_config import configure_logging, get_logger
 from ploy_agent.notifier import repo as rec_repo
 from ploy_agent.notifier.rank import RankedPick, top_picks
-from ploy_agent.notifier.slack import post_picks as slack_post_picks
+from ploy_agent.notifier.slack import post_picks as slack_post_picks, reply_resolution
 from ploy_agent.notifier.telegram import post_picks as tg_post_picks
 
 log = get_logger("notifier")
 
 
-async def _recently_notified(pool, market_ids: list[str]) -> set[str]:
+async def _recently_notified_edges(
+    pool, market_ids: list[str]
+) -> dict[str, float]:
+    """Return {market_id: last_edge_cents} for markets notified in the cooldown window."""
     if not market_ids:
-        return set()
+        return {}
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT DISTINCT market_id FROM recommendations
+            SELECT DISTINCT ON (market_id) market_id, payload_json
+            FROM recommendations
             WHERE market_id = ANY($1::text[])
               AND ts > NOW() - INTERVAL '15 minutes'
               AND status = 'pending'
+            ORDER BY market_id, ts DESC
             """,
             market_ids,
         )
-    return {str(r["market_id"]) for r in rows}
+    out: dict[str, float] = {}
+    for r in rows:
+        pj = r["payload_json"] or {}
+        if isinstance(pj, str):
+            pj = json.loads(pj)
+        out[str(r["market_id"])] = abs(float(pj.get("edge_cents", 0)))
+    return out
 
 
-async def _resolve_pnl(pool) -> None:
+async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
     """Check approved recommendations whose markets have closed and compute P&L."""
     async with pool.acquire() as conn:
         unresolved = await conn.fetch(
             """
-            SELECT r.id, r.market_id, r.payload_json, m.status AS market_status
+            SELECT r.id, r.market_id, r.payload_json, m.status AS market_status,
+                   r.slack_channel, r.slack_ts
             FROM recommendations r
             JOIN markets m ON m.id = r.market_id
             WHERE r.status = 'approved'
@@ -113,6 +127,19 @@ async def _resolve_pnl(pool) -> None:
                 direction=edge_dir,
             )
 
+            # Post thread reply to original Slack alert
+            slack_ch = row.get("slack_channel")
+            slack_ts = row.get("slack_ts")
+            if slack_ch and slack_ts and settings.slack_bot_token:
+                try:
+                    await reply_resolution(
+                        http, slack_ch, slack_ts,
+                        rec_id=rec_id, outcome=outcome,
+                        pnl_cents=pnl, edge_direction=edge_dir,
+                    )
+                except Exception as e:
+                    log.warning("slack_reply_failed", rec_id=rec_id, error=str(e))
+
 
 async def _tick(pool, http: httpx.AsyncClient) -> None:
     async with pool.acquire() as conn:
@@ -126,8 +153,41 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
         log.info("no_picks")
         return
 
-    already = await _recently_notified(pool, [p.market_id for p in picks])
-    picks = [p for p in picks if p.market_id not in already][: settings.rank_top_n]
+    prev_edges = await _recently_notified_edges(pool, [p.market_id for p in picks])
+    # Smart dedup: skip if recently notified UNLESS edge has doubled (significant move)
+    deduped: list[RankedPick] = []
+    for p in picks:
+        prev = prev_edges.get(p.market_id)
+        if prev is None:
+            deduped.append(p)  # Not recently notified
+        elif abs(p.edge_cents) >= prev * 2.0 and abs(p.edge_cents) >= settings.min_edge_cents * 2:
+            deduped.append(p)  # Edge doubled — re-alert
+            log.info(
+                "re_alert_edge_doubled",
+                market_id=p.market_id,
+                prev_edge=round(prev, 1),
+                new_edge=round(abs(p.edge_cents), 1),
+            )
+    picks = deduped[: settings.rank_top_n]
+
+    # Alert filters — adaptive edge + configured thresholds
+    async with pool.acquire() as conn:
+        adaptive_edge = await adaptive_min_edge(conn)
+    min_e = settings.alert_min_edge or adaptive_edge
+    min_d = settings.alert_min_depth
+    min_s = settings.alert_min_score
+    if min_e > 0 or min_d > 0 or min_s > 0:
+        before = len(picks)
+        picks = [
+            p for p in picks
+            if abs(p.edge_cents) >= min_e
+            and p.depth_1c >= min_d
+            and p.score >= min_s
+        ]
+        dropped = before - len(picks)
+        if dropped:
+            log.info("alert_filter_dropped", dropped=dropped, min_edge=min_e, min_depth=min_d, min_score=min_s)
+
     if not picks:
         log.info("no_new_picks")
         return
@@ -194,11 +254,11 @@ async def _run(stop: asyncio.Event) -> None:
                 except Exception as e:
                     log.warning("notifier_tick_failed", error=str(e))
                 try:
-                    await _resolve_pnl(pool)
+                    await _resolve_pnl(pool, http)
                 except Exception as e:
                     log.warning("pnl_resolve_failed", error=str(e))
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=60.0)
+                    await asyncio.wait_for(stop.wait(), timeout=5.0)
                 except TimeoutError:
                     pass
     finally:

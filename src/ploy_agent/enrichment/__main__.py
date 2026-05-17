@@ -29,17 +29,18 @@ async def _tick(pool, client: httpx.AsyncClient) -> None:
         rows = await conn.fetch(
             "SELECT id, question FROM markets WHERE status IS DISTINCT FROM 'closed'"
         )
-    seen_games: set[str] = set()
-    for r in rows:
-        mid = str(r["id"])
-        q = r.get("question")
-        gid = match_market_to_game(q, games)
-        if not gid:
-            continue
-        game = next((g for g in games if g.game_id == gid), None)
-        if not game:
-            continue
-        async with pool.acquire() as conn:
+
+        seen_games: set[str] = set()
+        for r in rows:
+            mid = str(r["id"])
+            q = r.get("question")
+            gid = match_market_to_game(q, games)
+            if not gid:
+                continue
+            game = next((g for g in games if g.game_id == gid), None)
+            if not game:
+                continue
+
             prev = await erepo.fetch_latest_scores(conn, gid)
             await upsert_market_game_map(conn, mid, gid)
             await insert_game_state(

@@ -346,13 +346,13 @@ async def _sse_generator():
                 rec_row = await conn.fetchrow(
                     "SELECT id, market_id, score, status, strategy_id, ts FROM recommendations ORDER BY id DESC LIMIT 1"
                 )
-                # Pipeline status counts
-                stats = {
-                    "markets": int(await conn.fetchval("SELECT COUNT(*) FROM markets") or 0),
-                    "prices": int(await conn.fetchval("SELECT COUNT(*) FROM prices") or 0),
-                    "fair_values": int(await conn.fetchval("SELECT COUNT(*) FROM fair_values") or 0),
-                    "recommendations": int(await conn.fetchval("SELECT COUNT(*) FROM recommendations") or 0),
-                }
+                # Approximate counts — avoid expensive COUNT(*) on hypertables
+                stats = {}
+                for tbl in ("markets", "prices", "fair_values", "recommendations"):
+                    approx = await conn.fetchval(
+                        "SELECT reltuples::bigint FROM pg_class WHERE relname = $1", tbl
+                    )
+                    stats[tbl] = int(approx) if approx and approx > 0 else 0
 
             # Emit price tick if new
             if price_row:
@@ -404,6 +404,8 @@ async def _sse_generator():
             # Always emit stats as heartbeat
             yield f"event: pipeline_status\ndata: {json.dumps(stats)}\n\n"
 
+        except asyncio.CancelledError:
+            return
         except Exception:
             yield f"event: error\ndata: {json.dumps({'msg': 'db_poll_failed'})}\n\n"
 
@@ -496,6 +498,186 @@ async def pnl_data() -> dict[str, Any]:
         "cumulative": cumulative,
         "strategies": strategies,
     }
+
+
+# ---------- Accuracy / Brier Score API ----------
+
+
+@app.get("/api/accuracy")
+async def accuracy_data() -> dict[str, Any]:
+    """Per-strategy Brier scores: model_prob vs resolved_outcome (ground truth)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Join latest fair_value per (market, strategy) with resolved recommendations
+        rows = await conn.fetch(
+            """
+            WITH latest_fv AS (
+              SELECT DISTINCT ON (market_id, strategy_id)
+                     market_id, strategy_id, model_prob, market_prob
+              FROM fair_values
+              ORDER BY market_id, strategy_id, ts DESC
+            )
+            SELECT fv.strategy_id,
+                   fv.model_prob,
+                   fv.market_prob,
+                   r.resolved_outcome
+            FROM latest_fv fv
+            JOIN recommendations r ON r.market_id = fv.market_id
+                                  AND r.strategy_id = fv.strategy_id
+            WHERE r.resolved_outcome IS NOT NULL
+            """
+        )
+        # Also get overall model-vs-market Brier (existing metric, for context)
+        overall_brier = await conn.fetchval(
+            """
+            SELECT AVG(POWER(model_prob - market_prob, 2))
+            FROM (
+              SELECT DISTINCT ON (market_id, strategy_id) model_prob, market_prob
+              FROM fair_values
+              ORDER BY market_id, strategy_id, ts DESC
+            ) x
+            """
+        )
+
+    if not rows:
+        return {
+            "has_data": False,
+            "message": "No resolved markets yet — accuracy tracking starts once picks resolve.",
+            "overall_brier_vs_market": float(overall_brier) if overall_brier else None,
+            "strategies": [],
+            "totals": {},
+        }
+
+    # Per-strategy aggregation
+    from collections import defaultdict
+
+    strats: dict[str, list[dict[str, float]]] = defaultdict(list)
+    for r in rows:
+        strats[r["strategy_id"]].append({
+            "model_prob": float(r["model_prob"]),
+            "market_prob": float(r["market_prob"]),
+            "outcome": int(r["resolved_outcome"]),
+        })
+
+    strategy_results = []
+    all_model_errors = []
+    all_market_errors = []
+
+    for sid, entries in sorted(strats.items()):
+        n = len(entries)
+        model_brier = sum((e["model_prob"] - e["outcome"]) ** 2 for e in entries) / n
+        market_brier = sum((e["market_prob"] - e["outcome"]) ** 2 for e in entries) / n
+        # Calibration: did model_prob > 0.5 predict the right outcome?
+        correct = sum(
+            1 for e in entries
+            if (e["model_prob"] >= 0.5 and e["outcome"] == 1)
+            or (e["model_prob"] < 0.5 and e["outcome"] == 0)
+        )
+        strategy_results.append({
+            "strategy_id": sid,
+            "n": n,
+            "brier_model": round(model_brier, 4),
+            "brier_market": round(market_brier, 4),
+            "edge_vs_market": round(market_brier - model_brier, 4),  # positive = model better
+            "accuracy_pct": round(correct / n * 100, 1) if n > 0 else 0,
+        })
+        all_model_errors.extend((e["model_prob"] - e["outcome"]) ** 2 for e in entries)
+        all_market_errors.extend((e["market_prob"] - e["outcome"]) ** 2 for e in entries)
+
+    total_n = len(all_model_errors)
+    totals = {
+        "n": total_n,
+        "brier_model": round(sum(all_model_errors) / total_n, 4) if total_n else None,
+        "brier_market": round(sum(all_market_errors) / total_n, 4) if total_n else None,
+        "edge_vs_market": round(
+            (sum(all_market_errors) - sum(all_model_errors)) / total_n, 4
+        ) if total_n else None,
+    }
+
+    return {
+        "has_data": True,
+        "overall_brier_vs_market": float(overall_brier) if overall_brier else None,
+        "strategies": strategy_results,
+        "totals": totals,
+    }
+
+
+# ---------- Calibration Curve API ----------
+
+
+@app.get("/api/calibration")
+async def calibration_data() -> dict[str, Any]:
+    """Calibration curve: bucketed predicted probability vs actual outcome rate."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH latest_fv AS (
+              SELECT DISTINCT ON (market_id, strategy_id)
+                     market_id, strategy_id, model_prob, market_prob
+              FROM fair_values
+              ORDER BY market_id, strategy_id, ts DESC
+            )
+            SELECT fv.strategy_id, fv.model_prob, fv.market_prob, r.resolved_outcome
+            FROM latest_fv fv
+            JOIN recommendations r ON r.market_id = fv.market_id
+                                  AND r.strategy_id = fv.strategy_id
+            WHERE r.resolved_outcome IS NOT NULL
+            """
+        )
+
+    if not rows:
+        return {"has_data": False, "buckets": [], "strategies": {}}
+
+    # Build calibration buckets
+    bucket_edges = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.01]
+    all_entries = [
+        {"model_prob": float(r["model_prob"]), "market_prob": float(r["market_prob"]),
+         "outcome": int(r["resolved_outcome"]), "strategy_id": r["strategy_id"]}
+        for r in rows
+    ]
+
+    # Overall calibration
+    buckets = []
+    for i in range(len(bucket_edges) - 1):
+        lo, hi = bucket_edges[i], bucket_edges[i + 1]
+        in_bucket = [e for e in all_entries if lo <= e["model_prob"] < hi]
+        if not in_bucket:
+            continue
+        avg_pred = sum(e["model_prob"] for e in in_bucket) / len(in_bucket)
+        actual_rate = sum(e["outcome"] for e in in_bucket) / len(in_bucket)
+        mkt_pred = sum(e["market_prob"] for e in in_bucket) / len(in_bucket)
+        buckets.append({
+            "range": f"{lo:.1f}-{hi:.1f}",
+            "n": len(in_bucket),
+            "avg_predicted": round(avg_pred, 3),
+            "actual_rate": round(actual_rate, 3),
+            "market_predicted": round(mkt_pred, 3),
+        })
+
+    # Per-strategy calibration
+    from collections import defaultdict
+    strat_entries: dict[str, list] = defaultdict(list)
+    for e in all_entries:
+        strat_entries[e["strategy_id"]].append(e)
+
+    strategies = {}
+    for sid, entries in strat_entries.items():
+        strat_buckets = []
+        for i in range(len(bucket_edges) - 1):
+            lo, hi = bucket_edges[i], bucket_edges[i + 1]
+            in_b = [e for e in entries if lo <= e["model_prob"] < hi]
+            if not in_b:
+                continue
+            strat_buckets.append({
+                "range": f"{lo:.1f}-{hi:.1f}",
+                "n": len(in_b),
+                "avg_predicted": round(sum(e["model_prob"] for e in in_b) / len(in_b), 3),
+                "actual_rate": round(sum(e["outcome"] for e in in_b) / len(in_b), 3),
+            })
+        strategies[sid] = strat_buckets
+
+    return {"has_data": True, "buckets": buckets, "strategies": strategies}
 
 
 def run() -> None:

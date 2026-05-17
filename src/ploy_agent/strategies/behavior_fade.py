@@ -88,6 +88,8 @@ class BehaviorFadeStrategy(Strategy):
         sign = 1.0 if price_delta >= 0 else -1.0
         fade_target = last_m - sign * min(abs(model_delta), 0.08)
         edge = calc_edge(fade_target, last_m)
+        if abs(edge) < settings.min_edge_cents:
+            return None
         reasoning = (
             f"Behavior fade: mid moved {price_delta:+.3f} vs model ΔYes {model_delta:+.3f} after score swing — "
             f"possible overshoot. Suggested anchor ~{fade_target:.3f} vs last mid {last_m:.3f}."

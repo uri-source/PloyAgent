@@ -35,7 +35,8 @@ def predict_home_win_prob(
     diff = float(home_score - away_score)
     reg = float(model.get("regulation_seconds") or 2880)
     period_n = int(period or 1)
-    elapsed_frac = min(1.0, max(0.0, (period_n - 1) / 4.0 + 0.2))
+    # Quarter-based elapsed fraction: Q1=0.0, Q2=0.25, Q3=0.5, Q4=0.75, OT=1.0
+    elapsed_frac = min(1.0, max(0.0, (period_n - 1) / 4.0))
     remaining = reg * (1.0 - elapsed_frac)
     poss = 0.0
     if possession:
@@ -45,7 +46,8 @@ def predict_home_win_prob(
         elif away_team.lower() in pl:
             poss = -1.0
     z = float(model.get("intercept", 0.0))
-    z += float(model.get("coef_diff", 0.0)) * (diff / max(1.0, float(home_score + away_score)))
+    # Use raw diff — normalizing by total score overweights early-game leads
+    z += float(model.get("coef_diff", 0.0)) * diff
     z += float(model.get("coef_time", 0.0)) * (remaining / reg)
     z += float(model.get("coef_poss", 0.0)) * poss
     return float(_sigmoid(z))

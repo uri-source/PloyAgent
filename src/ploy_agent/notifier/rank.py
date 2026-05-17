@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+from ploy_agent.common.fair_value_decay import decay_factor
+from ploy_agent.common.kelly import kelly_fraction
 from ploy_agent.common.scoring import composite_score, hours_until
 
 
@@ -22,6 +24,8 @@ class RankedPick:
     reasoning: str
     depth_1c: float
     score: float
+    kelly_frac: float = 0.0
+    decay: float = 1.0
 
 
 async def top_picks(
@@ -63,6 +67,7 @@ async def top_picks(
                lf.edge_cents,
                lf.confidence,
                lf.reasoning,
+               lf.ts AS fv_ts,
                COALESCE(lp.depth_1c, 0.0) AS depth_1c
         FROM markets m
         JOIN lp ON lp.market_id = m.id
@@ -71,6 +76,7 @@ async def top_picks(
         """,
         sids,
     )
+    now = datetime.now(timezone.utc)
     picks: list[RankedPick] = []
     for r in rows:
         end = r["end_date"]
@@ -80,7 +86,23 @@ async def top_picks(
         edge = float(r["edge_cents"])
         conf = float(r["confidence"])
         depth = float(r["depth_1c"] or 0.0)
-        sc = composite_score(edge, depth, conf, h)
+        model_prob = float(r["model_prob"])
+        market_prob = float(r["market_prob"])
+
+        # Apply fair value decay — stale signals lose strength
+        fv_ts = r.get("fv_ts")
+        if isinstance(fv_ts, datetime):
+            d = decay_factor(fv_ts, now)
+        else:
+            d = 1.0
+        effective_edge = edge * d
+
+        # Composite score uses decayed edge
+        sc = composite_score(effective_edge, depth, conf, h)
+
+        # Kelly sizing (display-only)
+        kf = kelly_fraction(model_prob, market_prob, edge)
+
         picks.append(
             RankedPick(
                 market_id=str(r["market_id"]),
@@ -88,13 +110,15 @@ async def top_picks(
                 question=r.get("question"),
                 end_date=r["end_date"],
                 mid=float(r["mid"]),
-                model_prob=float(r["model_prob"]),
-                market_prob=float(r["market_prob"]),
+                model_prob=model_prob,
+                market_prob=market_prob,
                 edge_cents=edge,
                 confidence=conf,
                 reasoning=str(r.get("reasoning") or ""),
                 depth_1c=depth,
                 score=sc,
+                kelly_frac=kf,
+                decay=d,
             )
         )
     picks.sort(key=lambda p: p.score, reverse=True)

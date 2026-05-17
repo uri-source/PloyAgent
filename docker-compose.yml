@@ -1,0 +1,100 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ploy_agent
+    volumes:
+      - tsdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    build: .
+    command: ploy-migrate
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+
+  ingest:
+    build: .
+    command: ploy-ingest
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    restart: unless-stopped
+
+  enrich:
+    build: .
+    command: ploy-enrich
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    restart: unless-stopped
+
+  reason:
+    build: .
+    command: ploy-reason
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    restart: unless-stopped
+
+  notify:
+    build: .
+    command: ploy-notify
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    restart: unless-stopped
+
+  web:
+    build: .
+    command: ploy-web
+    ports:
+      - "8765:8765"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+      WEB_HOST: "0.0.0.0"
+    restart: unless-stopped
+
+  slack-events:
+    build: .
+    command: python -m ploy_agent.notifier.slack_events
+    ports:
+      - "8766:8766"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    restart: unless-stopped
+
+volumes:
+  tsdata:

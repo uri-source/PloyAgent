@@ -13,20 +13,34 @@ def confidence_and_reasoning(
     market_prob: float,
     edge_cents: float,
     game_summary: str,
+    depth_1c: float = 0.0,
+    spread: float | None = None,
 ) -> tuple[float, str, list[dict[str, Any]]]:
     """
     LLM produces confidence + narrative only (not the game probability).
-    Falls back to neutral confidence when no API key.
+    Falls back to statistical confidence when no API key.
     """
     if not settings.anthropic_api_key:
+        from ploy_agent.common.confidence import statistical_confidence
+
+        conf, reasoning = statistical_confidence(
+            depth_1c=depth_1c,
+            spread=spread,
+            edge_cents=edge_cents,
+            mid=market_prob,
+        )
         return (
-            0.55,
-            "Anthropic key not configured; neutral confidence.",
-            [{"type": "heuristic", "detail": "no_llm"}],
+            conf,
+            f"No LLM key — statistical confidence. {reasoning}",
+            [{"type": "statistical", "detail": "market_microstructure"}],
         )
     import anthropic
 
-    ac = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    if not hasattr(confidence_and_reasoning, "_client"):
+        confidence_and_reasoning._client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key
+        )
+    ac = confidence_and_reasoning._client
     msg = ac.messages.create(
         model=settings.anthropic_model,
         max_tokens=400,

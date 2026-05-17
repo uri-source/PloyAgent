@@ -15,6 +15,7 @@ from ploy_agent.reasoning import repo
 from ploy_agent.reasoning.model import load_model
 from ploy_agent.reasoning.resolution import resolution_gate
 from ploy_agent.strategies import get_enabled
+from ploy_agent.strategies.auto_disable import disabled_strategy_ids
 from ploy_agent.strategies.types import StrategyContext
 
 log = get_logger("reasoning")
@@ -119,7 +120,25 @@ async def _evaluate_market(
         if not gs:
             gs = {}
 
-        ctx = StrategyContext(conn=conn, market_id=market_id, mrow=mrow, mid=mid, game_state=gs, model=model, http=http)
+        # Fetch book depth and spread for confidence scoring
+        price_row = await conn.fetchrow(
+            """
+            SELECT depth_1c, bid, ask FROM prices
+            WHERE market_id = $1 AND mid IS NOT NULL
+            ORDER BY ts DESC LIMIT 1
+            """,
+            market_id,
+        )
+        depth_1c = float(price_row["depth_1c"] or 0) if price_row else 0.0
+        spread = None
+        if price_row and price_row["bid"] is not None and price_row["ask"] is not None:
+            spread = float(price_row["ask"]) - float(price_row["bid"])
+
+        ctx = StrategyContext(
+            conn=conn, market_id=market_id, mrow=mrow, mid=mid,
+            game_state=gs, model=model, http=http,
+            depth_1c=depth_1c, spread=spread,
+        )
 
         for strat in enabled:
             try:
@@ -175,15 +194,40 @@ async def _run(stop: asyncio.Event) -> None:
         except (NotImplementedError, AttributeError):
             pass
 
+    # Bounded concurrency: evaluate up to 8 markets in parallel
+    sem = asyncio.Semaphore(8)
+    # Mutable list so auto-disable can swap it each tick
+    active_strategies: list[Any] = list(enabled)
+
+    async def _eval_guarded(market_id: str) -> None:
+        if stop.is_set():
+            return
+        async with sem:
+            await _evaluate_market(
+                pool, market_id, model, last_mid, last_eval, active_strategies, http
+            )
+
     try:
         async with httpx.AsyncClient(verify=httpx_verify()) as http:
             while not stop.is_set():
                 try:
-                    mids = await _candidate_markets(pool)
-                    for mid in mids:
-                        if stop.is_set():
-                            break
-                        await _evaluate_market(pool, mid, model, last_mid, last_eval, enabled, http)
+                    # Auto-disable losing strategies
+                    async with pool.acquire() as conn:
+                        disabled = await disabled_strategy_ids(conn)
+                    if disabled:
+                        active_strategies[:] = [s for s in enabled if s.id not in disabled]
+                        log.info("strategies_after_auto_disable",
+                                 disabled=list(disabled),
+                                 active=[s.id for s in active_strategies])
+                    else:
+                        active_strategies[:] = list(enabled)
+
+                    market_ids = await _candidate_markets(pool)
+                    tasks = [_eval_guarded(mid) for mid in market_ids]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for i, r in enumerate(results):
+                        if isinstance(r, Exception):
+                            log.warning("market_eval_failed", market_id=market_ids[i], error=str(r))
                 except Exception as e:
                     log.warning("reasoning_tick_failed", error=str(e))
                 try:

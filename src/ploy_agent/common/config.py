@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     rank_top_n: int = Field(default=5, alias="RANK_TOP_N")
     rank_merge_by_market: bool = Field(default=False, alias="RANK_MERGE_BY_MARKET")
 
+    # Alert filters — picks below these thresholds are silently dropped from notifications
+    alert_min_edge: float = Field(
+        default=0.0, alias="ALERT_MIN_EDGE",
+        description="Min abs(edge_cents) for Slack/Telegram alerts (0 = use MIN_EDGE_CENTS)",
+    )
+    alert_min_depth: float = Field(
+        default=0.0, alias="ALERT_MIN_DEPTH",
+        description="Min depth_1c for alerts (0 = no filter)",
+    )
+    alert_min_score: float = Field(
+        default=0.0, alias="ALERT_MIN_SCORE",
+        description="Min composite score for alerts (0 = no filter)",
+    )
+
     web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8765, alias="WEB_PORT")
 

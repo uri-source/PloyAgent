@@ -32,13 +32,18 @@ def _pick_block(pick: RankedPick, rec_id: int) -> list[dict[str, Any]]:
         "text": {"type": "plain_text", "text": f"{edge_dir} signal: {q[:148]}"},
     }
 
+    kelly_str = f"{pick.kelly_frac * 100:.1f}%" if pick.kelly_frac > 0 else "—"
+    decay_str = f"{pick.decay:.0%}" if pick.decay < 0.99 else ""
+    decay_note = f"  |  *Freshness:* {decay_str}" if decay_str else ""
+
     details = (
         f"*Edge:* {edge_abs:.1f}¢ ({edge_dir})  |  "
         f"*Model:* {pick.model_prob:.1%}  |  *Market:* {pick.market_prob:.1%}\n"
         f"*Confidence:* {pick.confidence:.0%}  |  "
         f"*Depth:* {pick.depth_1c:.0f}  |  "
         f"*Score:* {pick.score:.2f}  |  "
-        f"*Strategy:* `{pick.strategy_id}`"
+        f"*Kelly:* {kelly_str}  |  "
+        f"*Strategy:* `{pick.strategy_id}`{decay_note}"
     )
     detail_section = {
         "type": "section",
@@ -147,3 +152,44 @@ async def update_message_status(
     data = r.json()
     if not data.get("ok"):
         log.warning("slack_update_failed", error=data.get("error"), rec_id=rec_id)
+
+
+async def reply_resolution(
+    client: httpx.AsyncClient,
+    channel: str,
+    thread_ts: str,
+    rec_id: int,
+    outcome: int,
+    pnl_cents: float,
+    edge_direction: str,
+) -> None:
+    """Post a thread reply to the original Slack alert with resolution outcome + P&L."""
+    if not settings.slack_bot_token:
+        return
+
+    outcome_str = "YES ✅" if outcome == 1 else "NO ❌"
+    pnl_sign = "+" if pnl_cents >= 0 else ""
+    result_emoji = "🟢" if pnl_cents >= 0 else "🔴"
+
+    text = (
+        f"{result_emoji} *Resolved* — Outcome: *{outcome_str}*\n"
+        f"Direction: `{edge_direction.upper()}` → P&L: *{pnl_sign}{pnl_cents:.1f}¢*"
+    )
+
+    payload = {
+        "channel": channel,
+        "thread_ts": thread_ts,
+        "text": text,
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text},
+            },
+        ],
+    }
+    r = await client.post(_SLACK_POST_URL, headers=_headers(), json=payload, timeout=10.0)
+    data = r.json()
+    if not data.get("ok"):
+        log.warning("slack_reply_failed", error=data.get("error"), rec_id=rec_id)
+    else:
+        log.info("slack_resolution_replied", rec_id=rec_id, pnl=pnl_cents)
