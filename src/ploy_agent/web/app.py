@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 import json
@@ -9,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from starlette.responses import StreamingResponse
 
 from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
@@ -308,6 +310,192 @@ async def dashboard(request: Request) -> Any:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ---------- SSE (Server-Sent Events) for real-time updates ----------
+
+
+async def _sse_generator():
+    """Poll DB every 2 seconds and push changes as SSE events."""
+    pool = await get_pool()
+    last_price_ts: str | None = None
+    last_fv_ts: str | None = None
+    last_rec_id: int | None = None
+
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                # Latest price tick
+                price_row = await conn.fetchrow(
+                    """
+                    SELECT p.ts, p.market_id, m.question, m.category, p.bid, p.ask, p.mid, p.depth_1c
+                    FROM prices p JOIN markets m ON m.id = p.market_id
+                    ORDER BY p.ts DESC LIMIT 1
+                    """
+                )
+                # Latest fair value
+                fv_row = await conn.fetchrow(
+                    """
+                    SELECT f.ts, f.strategy_id, f.market_id, m.question, f.model_prob,
+                           f.market_prob, f.edge_cents, f.confidence
+                    FROM fair_values f JOIN markets m ON m.id = f.market_id
+                    ORDER BY f.ts DESC LIMIT 1
+                    """
+                )
+                # Latest recommendation
+                rec_row = await conn.fetchrow(
+                    "SELECT id, market_id, score, status, strategy_id, ts FROM recommendations ORDER BY id DESC LIMIT 1"
+                )
+                # Pipeline status counts
+                stats = {
+                    "markets": int(await conn.fetchval("SELECT COUNT(*) FROM markets") or 0),
+                    "prices": int(await conn.fetchval("SELECT COUNT(*) FROM prices") or 0),
+                    "fair_values": int(await conn.fetchval("SELECT COUNT(*) FROM fair_values") or 0),
+                    "recommendations": int(await conn.fetchval("SELECT COUNT(*) FROM recommendations") or 0),
+                }
+
+            # Emit price tick if new
+            if price_row:
+                pts = str(price_row["ts"])
+                if pts != last_price_ts:
+                    last_price_ts = pts
+                    data = {
+                        "ts": pts,
+                        "market_id": price_row["market_id"],
+                        "question": price_row["question"] or "",
+                        "category": price_row["category"] or "",
+                        "mid": float(price_row["mid"]) if price_row["mid"] else None,
+                        "bid": float(price_row["bid"]) if price_row["bid"] else None,
+                        "ask": float(price_row["ask"]) if price_row["ask"] else None,
+                    }
+                    yield f"event: price_tick\ndata: {json.dumps(data)}\n\n"
+
+            # Emit fair value if new
+            if fv_row:
+                fts = str(fv_row["ts"])
+                if fts != last_fv_ts:
+                    last_fv_ts = fts
+                    data = {
+                        "ts": fts,
+                        "strategy_id": fv_row["strategy_id"],
+                        "market_id": fv_row["market_id"],
+                        "question": fv_row["question"] or "",
+                        "edge_cents": float(fv_row["edge_cents"]),
+                        "confidence": float(fv_row["confidence"]),
+                        "model_prob": float(fv_row["model_prob"]),
+                        "market_prob": float(fv_row["market_prob"]),
+                    }
+                    yield f"event: new_signal\ndata: {json.dumps(data)}\n\n"
+
+            # Emit recommendation if new
+            if rec_row:
+                rid = int(rec_row["id"])
+                if last_rec_id is None or rid > last_rec_id:
+                    last_rec_id = rid
+                    data = {
+                        "id": rid,
+                        "market_id": rec_row["market_id"],
+                        "score": float(rec_row["score"]),
+                        "status": rec_row["status"],
+                        "strategy_id": rec_row["strategy_id"] or "",
+                    }
+                    yield f"event: recommendation_update\ndata: {json.dumps(data)}\n\n"
+
+            # Always emit stats as heartbeat
+            yield f"event: pipeline_status\ndata: {json.dumps(stats)}\n\n"
+
+        except Exception:
+            yield f"event: error\ndata: {json.dumps({'msg': 'db_poll_failed'})}\n\n"
+
+        await asyncio.sleep(2.0)
+
+
+@app.get("/events")
+async def sse_events():
+    """Server-Sent Events endpoint for real-time dashboard updates."""
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------- P&L API ----------
+
+
+@app.get("/api/pnl")
+async def pnl_data() -> dict[str, Any]:
+    """Return P&L summary for resolved approved recommendations."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, market_id, resolved_at, pnl_cents, edge_direction,
+                   entry_price, resolved_outcome, strategy_id, score
+            FROM recommendations
+            WHERE pnl_cents IS NOT NULL
+            ORDER BY resolved_at ASC
+            """
+        )
+        # Summary stats
+        total_pnl = await conn.fetchval(
+            "SELECT COALESCE(SUM(pnl_cents), 0) FROM recommendations WHERE pnl_cents IS NOT NULL"
+        )
+        total_resolved = await conn.fetchval(
+            "SELECT COUNT(*) FROM recommendations WHERE pnl_cents IS NOT NULL"
+        )
+        wins = await conn.fetchval(
+            "SELECT COUNT(*) FROM recommendations WHERE pnl_cents IS NOT NULL AND pnl_cents > 0"
+        )
+        # Per-strategy breakdown
+        strategy_rows = await conn.fetch(
+            """
+            SELECT strategy_id,
+                   COUNT(*) AS n,
+                   SUM(pnl_cents) AS total_pnl,
+                   COUNT(*) FILTER (WHERE pnl_cents > 0) AS wins
+            FROM recommendations
+            WHERE pnl_cents IS NOT NULL
+            GROUP BY strategy_id
+            """
+        )
+
+    cumulative: list[dict[str, Any]] = []
+    running = 0.0
+    for r in rows:
+        running += float(r["pnl_cents"])
+        cumulative.append({
+            "id": int(r["id"]),
+            "resolved_at": str(r["resolved_at"]),
+            "pnl_cents": float(r["pnl_cents"]),
+            "cumulative": round(running, 2),
+            "direction": r["edge_direction"],
+            "strategy_id": r["strategy_id"] or "",
+        })
+
+    strategies = []
+    for sr in strategy_rows:
+        n = int(sr["n"])
+        strategies.append({
+            "strategy_id": sr["strategy_id"] or "unknown",
+            "n": n,
+            "total_pnl": round(float(sr["total_pnl"]), 2),
+            "wins": int(sr["wins"]),
+            "win_rate": round(int(sr["wins"]) / n, 3) if n > 0 else 0,
+        })
+
+    return {
+        "total_pnl_cents": round(float(total_pnl), 2),
+        "total_resolved": int(total_resolved),
+        "wins": int(wins),
+        "win_rate": round(int(wins) / int(total_resolved), 3) if int(total_resolved) > 0 else 0,
+        "cumulative": cumulative,
+        "strategies": strategies,
+    }
 
 
 def run() -> None:

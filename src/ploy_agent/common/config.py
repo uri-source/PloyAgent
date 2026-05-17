@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     slack_channel: str = Field(default="", alias="SLACK_CHANNEL")
     slack_events_port: int = Field(default=8766, alias="SLACK_EVENTS_PORT")
 
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+
     log_json: bool = Field(default=False, alias="LOG_JSON")
 
     agent_log_file: Path = Field(

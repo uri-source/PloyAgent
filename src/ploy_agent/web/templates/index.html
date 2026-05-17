@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta http-equiv="refresh" content="{{ refresh_sec }}"/>
+  <!-- SSE replaces page refresh; fallback refresh retained for no-JS -->
+  <meta http-equiv="refresh" content="120"/>
   <title>Polymarket Edge Agent</title>
   <style>
     :root {
@@ -299,5 +300,143 @@
     <p class="empty">No persisted recommendations — run ploy-notify or rely on “Current ranked edges” above.</p>
     {% endif %}
   </section>
+
+  <!-- P&L Section -->
+  <section>
+    <h2>Hypothetical P&L (approved picks)</h2>
+    <div id="pnl-summary" class="metrics" style="margin-bottom:1rem">
+      <div class="metric"><div class="k">Total P&L</div><div class="v" id="pnl-total">—</div></div>
+      <div class="metric"><div class="k">Resolved</div><div class="v" id="pnl-resolved">—</div></div>
+      <div class="metric"><div class="k">Wins</div><div class="v" id="pnl-wins">—</div></div>
+      <div class="metric"><div class="k">Win Rate</div><div class="v" id="pnl-winrate">—</div></div>
+    </div>
+    <div id="pnl-strategies"></div>
+    <div id="pnl-chart" style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1rem;min-height:120px;margin-top:0.75rem">
+      <canvas id="pnlCanvas" style="width:100%;height:100px"></canvas>
+    </div>
+  </section>
+
+  <!-- Real-time event log -->
+  <section>
+    <h2>Live feed <span id="sse-status" style="font-size:0.7rem;color:var(--pos)">● connected</span></h2>
+    <div id="live-feed" class="log-panel" style="max-height:200px">
+      <pre id="feed-lines"></pre>
+    </div>
+  </section>
+
+  <script>
+  // ---------- SSE Real-time updates ----------
+  (function() {
+    const statusEl = document.getElementById('sse-status');
+    const feedEl = document.getElementById('feed-lines');
+    const MAX_FEED = 50;
+    let feedLines = [];
+
+    function addFeedLine(text) {
+      const ts = new Date().toLocaleTimeString();
+      feedLines.unshift(`[${ts}] ${text}`);
+      if (feedLines.length > MAX_FEED) feedLines.pop();
+      feedEl.textContent = feedLines.join('\n');
+    }
+
+    function updateMetric(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    const es = new EventSource('/events');
+
+    es.addEventListener('price_tick', function(e) {
+      const d = JSON.parse(e.data);
+      addFeedLine(`💰 Price: ${d.category || '?'} mid=${d.mid?.toFixed(3) || '?'} — ${(d.question || d.market_id).slice(0, 60)}`);
+    });
+
+    es.addEventListener('new_signal', function(e) {
+      const d = JSON.parse(e.data);
+      const dir = d.edge_cents > 0 ? 'BUY' : 'SELL';
+      addFeedLine(`📊 Signal: ${dir} ${Math.abs(d.edge_cents).toFixed(1)}¢ [${d.strategy_id}] — ${(d.question || d.market_id).slice(0, 50)}`);
+    });
+
+    es.addEventListener('recommendation_update', function(e) {
+      const d = JSON.parse(e.data);
+      addFeedLine(`⭐ Rec #${d.id}: ${d.status} (score ${d.score.toFixed(2)}) [${d.strategy_id}]`);
+    });
+
+    es.addEventListener('pipeline_status', function(e) {
+      const d = JSON.parse(e.data);
+      updateMetric('stat-markets', d.markets);
+      updateMetric('stat-prices', d.prices);
+      updateMetric('stat-fv', d.fair_values);
+      updateMetric('stat-recs', d.recommendations);
+    });
+
+    es.addEventListener('error', function(e) {
+      addFeedLine('⚠️ SSE error — reconnecting...');
+    });
+
+    es.onopen = function() {
+      statusEl.textContent = '● connected';
+      statusEl.style.color = 'var(--pos)';
+    };
+    es.onerror = function() {
+      statusEl.textContent = '● reconnecting';
+      statusEl.style.color = 'var(--neg)';
+    };
+  })();
+
+  // ---------- P&L Data ----------
+  (function() {
+    async function loadPnl() {
+      try {
+        const r = await fetch('/api/pnl');
+        const d = await r.json();
+        document.getElementById('pnl-total').textContent = (d.total_pnl_cents >= 0 ? '+' : '') + d.total_pnl_cents.toFixed(1) + '¢';
+        document.getElementById('pnl-total').style.color = d.total_pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)';
+        document.getElementById('pnl-resolved').textContent = d.total_resolved;
+        document.getElementById('pnl-wins').textContent = d.wins;
+        document.getElementById('pnl-winrate').textContent = (d.win_rate * 100).toFixed(1) + '%';
+
+        // Strategy breakdown
+        const stEl = document.getElementById('pnl-strategies');
+        if (d.strategies && d.strategies.length > 0) {
+          let html = '<table><thead><tr><th>Strategy</th><th>N</th><th>P&L</th><th>Wins</th><th>Win%</th></tr></thead><tbody>';
+          d.strategies.forEach(s => {
+            const color = s.total_pnl >= 0 ? 'var(--pos)' : 'var(--neg)';
+            html += `<tr><td class="mono">${s.strategy_id}</td><td>${s.n}</td><td class="mono" style="color:${color}">${s.total_pnl >= 0 ? '+' : ''}${s.total_pnl.toFixed(1)}¢</td><td>${s.wins}</td><td>${(s.win_rate*100).toFixed(0)}%</td></tr>`;
+          });
+          html += '</tbody></table>';
+          stEl.innerHTML = html;
+        }
+
+        // Simple cumulative P&L chart (canvas sparkline)
+        const canvas = document.getElementById('pnlCanvas');
+        if (canvas && d.cumulative && d.cumulative.length > 1) {
+          const ctx = canvas.getContext('2d');
+          const W = canvas.offsetWidth; const H = 100;
+          canvas.width = W; canvas.height = H;
+          const pts = d.cumulative.map(c => c.cumulative);
+          const mn = Math.min(...pts, 0); const mx = Math.max(...pts, 1);
+          const rng = mx - mn || 1;
+          ctx.clearRect(0, 0, W, H);
+          ctx.strokeStyle = pts[pts.length-1] >= 0 ? '#3ecf8e' : '#f07178';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          pts.forEach((v, i) => {
+            const x = (i / (pts.length - 1)) * W;
+            const y = H - ((v - mn) / rng) * (H - 10) - 5;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          // Zero line
+          const zy = H - ((0 - mn) / rng) * (H - 10) - 5;
+          ctx.strokeStyle = 'rgba(139,156,179,0.3)'; ctx.lineWidth = 1;
+          ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(W,zy); ctx.stroke();
+        }
+      } catch(e) { /* silent */ }
+    }
+    loadPnl();
+    setInterval(loadPnl, 30000); // refresh P&L every 30s
+  })();
+  </script>
 </body>
 </html>

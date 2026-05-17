@@ -44,6 +44,17 @@ async def update_slack_refs(conn: asyncpg.Connection, rec_id: int, channel: str,
     )
 
 
+async def update_telegram_refs(
+    conn: asyncpg.Connection, rec_id: int, chat_id: str, message_id: int
+) -> None:
+    await conn.execute(
+        "UPDATE recommendations SET telegram_chat_id = $2, telegram_message_id = $3 WHERE id = $1",
+        rec_id,
+        chat_id,
+        message_id,
+    )
+
+
 async def set_status(conn: asyncpg.Connection, rec_id: int, status: str, notes: str | None) -> None:
     await conn.execute(
         """
