@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!-- SSE replaces page refresh; fallback refresh retained for no-JS -->
-  <meta http-equiv="refresh" content="120"/>
+  <meta http-equiv="refresh" content="60"/>
   <title>Polymarket Edge Agent</title>
   <style>
     :root {
@@ -16,6 +15,7 @@
       --pos: #3ecf8e;
       --neg: #f07178;
       --border: #2a3545;
+      --warn: #e7c547;
     }
     * { box-sizing: border-box; }
     body {
@@ -25,398 +25,752 @@
       margin: 0;
       padding: 1.25rem 1.5rem 3rem;
       line-height: 1.5;
+      max-width: 1100px;
+      margin-left: auto;
+      margin-right: auto;
     }
-    h1 { font-size: 1.35rem; font-weight: 650; margin: 0 0 0.25rem; }
-    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.25rem; }
-    .metrics {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
+    h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    h2 {
+      font-size: 1.05rem;
+      font-weight: 650;
+      margin: 0 0 0.75rem;
+      color: var(--text);
     }
-    .metric {
-      background: var(--panel);
+    .section-lead {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin: -0.35rem 0 1rem;
+    }
+    section { margin-bottom: 2rem; }
+    .hero {
+      background: linear-gradient(135deg, #1a2a42 0%, #1a2332 100%);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.65rem 0.75rem;
-    }
-    .metric .v { font-size: 1.25rem; font-weight: 600; }
-    .metric .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    section {
+      border-radius: 12px;
+      padding: 1.25rem 1.35rem 1rem;
       margin-bottom: 2rem;
     }
-    h2 {
-      font-size: 1rem;
-      font-weight: 600;
-      color: var(--accent);
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 0.35rem;
-      margin: 0 0 0.75rem;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.85rem;
-      background: var(--panel);
-      border-radius: 8px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-    }
-    th, td {
-      text-align: left;
-      padding: 0.5rem 0.65rem;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-    }
-    th {
-      background: #141c28;
-      color: var(--muted);
-      font-weight: 600;
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    tr:last-child td { border-bottom: none; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
-    .edge-pos { color: var(--pos); font-weight: 600; }
-    .edge-neg { color: var(--neg); font-weight: 600; }
-    .pick-card {
+    .hero h2 { color: var(--accent); font-size: 1.15rem; }
+    .rec-list { display: flex; flex-direction: column; gap: 0.85rem; }
+    .rec-card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 1rem;
-      margin-bottom: 0.75rem;
+      padding: 1rem 1.1rem;
+      position: relative;
     }
-    .pick-card h3 { margin: 0 0 0.35rem; font-size: 0.95rem; font-weight: 600; }
-    .pick-meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.5rem; }
-    .reason { font-size: 0.85rem; color: #c5d0de; white-space: pre-wrap; }
-    .empty { color: var(--muted); font-style: italic; }
+    .rec-card.rank-1 { border-color: rgba(61, 158, 255, 0.45); box-shadow: 0 0 20px rgba(61, 158, 255, 0.08); }
+    .rec-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 0.5rem 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .rank-num {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--muted);
+      min-width: 1.5rem;
+    }
+    .rec-title { flex: 1; font-size: 1rem; font-weight: 600; margin: 0; line-height: 1.35; }
+    .pill {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .pill-buy { background: rgba(62, 207, 142, 0.2); color: var(--pos); }
+    .pill-sell { background: rgba(240, 113, 120, 0.2); color: var(--neg); }
+    .pill-pending { background: rgba(231, 197, 71, 0.2); color: var(--warn); }
+    .pill-approved { background: rgba(62, 207, 142, 0.15); color: var(--pos); }
+    .pill-rejected { background: rgba(240, 113, 120, 0.15); color: var(--neg); }
+    .edge-big {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .edge-pos { color: var(--pos); }
+    .edge-neg { color: var(--neg); }
+    .stats-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .stats-row strong { color: var(--text); font-weight: 600; }
+    .reason { font-size: 0.88rem; color: #c5d0de; margin-top: 0.35rem; }
     .badge {
       display: inline-block;
       font-size: 0.68rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      padding: 0.15rem 0.45rem;
+      padding: 0.12rem 0.4rem;
       border-radius: 4px;
       background: #243044;
       color: var(--accent);
       margin-right: 0.35rem;
-      vertical-align: middle;
     }
-    .status-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
+    .empty {
+      color: var(--muted);
+      font-style: italic;
+      padding: 0.75rem 0;
     }
-    .status-card {
+    .empty-box {
+      background: var(--panel);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    details {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 0.75rem 0.85rem;
+      margin-bottom: 0.75rem;
+      overflow: hidden;
     }
-    .status-card .row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+    details summary {
+      cursor: pointer;
+      padding: 0.65rem 0.85rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: var(--muted);
+      list-style: none;
+    }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary { border-bottom: 1px solid var(--border); color: var(--text); }
+    .details-body { padding: 0.85rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.45rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+      gap: 0.5rem;
+    }
+    .metric {
+      background: #141c28;
+      border-radius: 6px;
+      padding: 0.5rem 0.6rem;
+    }
+    .metric .v { font-size: 1.1rem; font-weight: 600; }
+    .metric .k { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; }
+    .sim-tracker {
+      background: linear-gradient(135deg, #141c28 0%, #1a2436 100%);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+    }
+    .sim-tracker-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 1rem;
+      margin-bottom: 0.65rem;
+    }
+    .sim-tracker-head h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--accent);
+    }
+    .sim-tracker-status {
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .sim-tracker-status.live { background: rgba(62, 207, 142, 0.2); color: var(--pos); }
+    .sim-tracker-status.stopped { background: rgba(240, 113, 120, 0.15); color: var(--neg); }
+    .sim-tracker-status.idle { background: rgba(136, 146, 164, 0.2); color: var(--muted); }
+    .sim-tracker-meta { font-size: 0.8rem; color: var(--muted); }
+    .sim-recent { margin-top: 0.65rem; font-size: 0.8rem; }
+    .sim-recent table { width: 100%; }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.5rem;
+    }
+    .status-card {
+      background: #141c28;
+      border-radius: 6px;
+      padding: 0.55rem 0.65rem;
+      font-size: 0.8rem;
+    }
     .status-dot {
-      width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0;
+      display: inline-block;
+      width: 8px; height: 8px; border-radius: 50%; margin-right: 0.35rem;
     }
-    .status-ok .status-dot { background: var(--pos); box-shadow: 0 0 8px rgba(62, 207, 142, 0.45); }
-    .status-warn .status-dot { background: #e7c547; box-shadow: 0 0 8px rgba(231, 197, 71, 0.35); }
-    .status-bad .status-dot { background: var(--neg); box-shadow: 0 0 8px rgba(240, 113, 120, 0.4); }
+    .status-ok .status-dot { background: var(--pos); }
+    .status-warn .status-dot { background: var(--warn); }
+    .status-bad .status-dot { background: var(--neg); }
     .status-unknown .status-dot { background: var(--muted); }
-    .status-label { font-weight: 600; font-size: 0.88rem; }
-    .status-detail { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
-    .log-meta { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; }
+    #live-updated { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; }
+    #feed-lines { font-size: 0.75rem; max-height: 120px; overflow: auto; margin: 0; }
   </style>
 </head>
 <body>
   <h1>Polymarket Edge Agent</h1>
-  <p class="sub">Live ranking (refreshes every {{ refresh_sec }}s). Configure strategies via <span class="mono">AGENT_STRATEGIES</span>. Run <span class="mono">ploy-ingest</span>, <span class="mono">ploy-enrich</span>, <span class="mono">ploy-reason</span>, optional <span class="mono">ploy-notify</span>.</p>
+  <p class="sub">
+  Ranked trading ideas from your strategies — <strong>BUY</strong> means model fair value is above the market;
+  <strong>SELL</strong> means below. Minimum edge {{ "%.0f"|format(min_edge_cents) }}¢ after fees.
+  Page refreshes every {{ refresh_sec }}s.
+  </p>
 
-  <section>
-    <h2>Pipeline status</h2>
-    <p class="log-meta">Heuristic freshness from the database (not OS process monitoring). Green = recent writes; adjust thresholds in <span class="mono">web/app.py</span> if needed.</p>
-    <div class="status-grid">
-      {% for s in pipeline_status %}
-      <div class="status-card status-{{ s.level }}">
-        <div class="row"><span class="status-dot"></span><span class="status-label mono">{{ s.label }}</span></div>
-        <div class="status-detail">{{ s.detail }}</div>
-      </div>
-      {% endfor %}
+  <div class="hero">
+    <h2>Top recommendations now</h2>
+    <p class="section-lead">
+      Live composite ranking (top {{ rank_top_n }}). Same scores <span class="mono">ploy-notify</span> uses for Slack/Telegram when configured.
+    </p>
+    <div id="top-picks-container" class="rec-list">
+      {% if picks %}
+        {% for p in picks %}
+        <article class="rec-card rank-{{ loop.index }}">
+          <div class="rec-header">
+            <span class="rank-num">#{{ loop.index }}</span>
+            <h3 class="rec-title">{{ p.question or "(no title)" }}</h3>
+            <span class="pill pill-{{ 'buy' if p.direction == 'BUY' else 'sell' }}">{{ p.direction }}</span>
+            <span class="edge-big {% if p.edge_cents >= 0 %}edge-pos{% else %}edge-neg{% endif %}">
+              {% if p.edge_cents >= 0 %}+{% endif %}{{ "%.1f"|format(p.edge_cents) }}¢
+            </span>
+          </div>
+          <div class="stats-row">
+            <span><span class="badge">{{ p.strategy_id }}</span></span>
+            <span>Market <strong>{{ "%.0f"|format(p.market_prob * 100) }}%</strong></span>
+            <span>Model <strong>{{ "%.0f"|format(p.model_prob * 100) }}%</strong></span>
+            <span>Confidence <strong>{{ "%.0f"|format(p.confidence * 100) }}%</strong></span>
+            <span>Score <strong>{{ "%.2f"|format(p.score) }}</strong></span>
+            <span>Liquidity <strong>{{ "%.0f"|format(p.depth_1c) }}</strong> @1¢</span>
+            {% if p.kelly_frac and p.kelly_frac > 0 %}
+            <span>Kelly <strong>{{ "%.1f"|format(p.kelly_frac * 100) }}%</strong></span>
+            {% endif %}
+          </div>
+          {% if p.reasoning %}
+          <p class="reason">{{ p.reasoning }}</p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty-box">
+          No edges above threshold right now. Check that <span class="mono">ploy-ingest</span>,
+          <span class="mono">ploy-enrich</span>, and <span class="mono">ploy-reason</span> are running and NBA/IPO markets have fresh prices.
+        </div>
+      {% endif %}
     </div>
-  </section>
-
-  <div class="metrics">
-    <div class="metric"><div class="k">Markets</div><div class="v">{{ stats.markets }}</div></div>
-    <div class="metric"><div class="k">Prices</div><div class="v">{{ stats.prices }}</div></div>
-    <div class="metric"><div class="k">Game state</div><div class="v">{{ stats.game_state }}</div></div>
-    <div class="metric"><div class="k">Fair values</div><div class="v">{{ stats.fair_values }}</div></div>
-    <div class="metric"><div class="k">Recommendations</div><div class="v">{{ stats.recommendations }}</div></div>
-    <div class="metric"><div class="k">Model ↔ Market</div><div class="v">{% if stats.brier_vs_market is not none %}{{ "%.4f"|format(stats.brier_vs_market) }}{% else %}n/a{% endif %}</div></div>
+    <p id="live-updated"></p>
   </div>
 
   <section>
-    <h2>Current ranked edges</h2>
-    {% if picks %}
-      {% for p in picks %}
-      <div class="pick-card">
-        <h3><span class="badge">{{ p.strategy_id }}</span>{{ p.question or "(no question)" }}</h3>
-        <div class="pick-meta mono">{{ p.market_id }}</div>
-        <div class="pick-meta">
-          Mid {{ "%.3f"|format(p.mid) }} · Model {{ "%.3f"|format(p.model_prob) }} ·
-          {% if p.edge_cents >= 0 %}<span class="edge-pos">+{{ "%.1f"|format(p.edge_cents) }}¢</span>{% else %}<span class="edge-neg">{{ "%.1f"|format(p.edge_cents) }}¢</span>{% endif %}
-          · Conf {{ "%.2f"|format(p.confidence) }} · Score {{ "%.3f"|format(p.score) }}
-          · Depth₁¢ {{ "%.1f"|format(p.depth_1c) }}
+    <h2>Recent alerts</h2>
+    <p class="section-lead">Rows saved by <span class="mono">ploy-notify</span> — approve/reject in Slack updates status here.</p>
+    <div id="saved-recs-container" class="rec-list">
+      {% if saved_recommendations %}
+        {% for r in saved_recommendations %}
+        <article class="rec-card">
+          <div class="rec-header">
+            <h3 class="rec-title">{{ r.question or r.market_id }}</h3>
+            <span class="pill pill-{{ r.status }}">{{ r.status }}</span>
+            <span class="pill pill-{{ 'buy' if r.direction == 'BUY' else 'sell' }}">{{ r.direction }}</span>
+            <span class="edge-big {% if r.edge_cents >= 0 %}edge-pos{% else %}edge-neg{% endif %}">
+              {% if r.edge_cents >= 0 %}+{% endif %}{{ "%.1f"|format(r.edge_cents) }}¢
+            </span>
+          </div>
+          <div class="stats-row">
+            <span class="mono">#{{ r.id }}</span>
+            <span><span class="badge">{{ r.strategy_id }}</span></span>
+            {% if r.category %}<span><span class="badge">{{ r.category }}</span></span>{% endif %}
+            <span>Score <strong>{{ "%.2f"|format(r.score) }}</strong></span>
+            <span class="mono">{{ r.ts }}</span>
+          </div>
+          {% if r.reasoning %}
+          <p class="reason">{{ r.reasoning }}</p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty-box">
+          No saved recommendations yet — run <span class="mono">ploy-notify</span> or wait for the next ranking tick.
+          Live picks above update even without notify.
         </div>
-        <div class="reason">{{ p.reasoning }}</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <details open>
+    <summary>Simulation (paper trading)</summary>
+    <div class="details-body">
+      <p class="section-lead" style="margin-top:0">
+        Threshold profiles from <span class="mono">ploy-sim init-profiles</span>.
+        Run <span class="mono">ploy-sim replay</span> or <span class="mono">ploy-sim forward</span> to populate
+        <span class="mono">sim_trades</span>.
+      </p>
+      <div id="sim-tracker" class="sim-tracker" style="margin-bottom:0.75rem">
+        <p class="empty">Loading simulation tracker…</p>
       </div>
-      {% endfor %}
-    {% else %}
-      <p class="empty">No ranked picks yet — need mapped in-game markets, live game state, and fair_values rows.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Latest lines (price ticks)</h2>
-    <p class="log-meta">Recent rows from <span class="mono">prices</span> joined to <span class="mono">markets.category</span> (e.g. nba, mlb).</p>
-    {% if price_ticks %}
-    <table>
-      <thead><tr><th>Time</th><th>Cat</th><th>Mid</th><th>Bid</th><th>Ask</th><th>Depth₁¢</th><th>Market</th></tr></thead>
-      <tbody>
-        {% for p in price_ticks %}
-        <tr>
-          <td class="mono">{{ p.ts }}</td>
-          <td><span class="badge">{{ p.category or "—" }}</span></td>
-          <td class="mono">{% if p.mid is not none %}{{ "%.3f"|format(p.mid) }}{% else %}—{% endif %}</td>
-          <td class="mono">{% if p.bid is not none %}{{ "%.3f"|format(p.bid) }}{% else %}—{% endif %}</td>
-          <td class="mono">{% if p.ask is not none %}{{ "%.3f"|format(p.ask) }}{% else %}—{% endif %}</td>
-          <td class="mono">{% if p.depth_1c is not none %}{{ "%.1f"|format(p.depth_1c) }}{% else %}—{% endif %}</td>
-          <td><span class="mono">{{ p.market_id }}</span><br/><small>{{ p.question or "" }}</small></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No price ticks yet — run <span class="mono">ploy-ingest</span> so the WebSocket stream writes to <span class="mono">prices</span>.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Live games (latest snapshot)</h2>
-    {% if game_rows %}
-    <table>
-      <thead><tr><th>Updated</th><th>Game</th><th>Score</th><th>Period</th><th>Clock</th></tr></thead>
-      <tbody>
-        {% for g in game_rows %}
-        <tr>
-          <td class="mono">{{ g.ts }}</td>
-          <td>{{ g.away_team }} @ {{ g.home_team }}</td>
-          <td class="mono">{{ g.away_score }}–{{ g.home_score }}</td>
-          <td>{{ g.period or "—" }}</td>
-          <td>{{ g.time_remaining or "—" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No game_state rows — run ploy-enrich (ESPN by default).</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Recent fair values</h2>
-    {% if fair_rows %}
-    <table>
-      <thead><tr><th>Time</th><th>Strategy</th><th>Market</th><th>Model</th><th>Mid</th><th>Edge ¢</th><th>Conf</th><th>Reasoning</th></tr></thead>
-      <tbody>
-        {% for f in fair_rows %}
-        <tr>
-          <td class="mono">{{ f.ts }}</td>
-          <td><span class="badge">{{ f.strategy_id }}</span></td>
-          <td><span class="mono">{{ f.market_id }}</span><br/><small>{{ f.question or "" }}</small></td>
-          <td class="mono">{{ "%.3f"|format(f.model_prob) }}</td>
-          <td class="mono">{{ "%.3f"|format(f.market_prob) }}</td>
-          <td class="mono">{{ "%.1f"|format(f.edge_cents) }}</td>
-          <td class="mono">{{ "%.2f"|format(f.confidence) }}</td>
-          <td>{{ f.reasoning or "" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No fair_values yet.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Recommendation history</h2>
-    {% if rec_rows %}
-    <table>
-      <thead><tr><th>ID</th><th>Time</th><th>Strategy</th><th>Market</th><th>Score</th><th>Status</th><th>Payload</th></tr></thead>
-      <tbody>
-        {% for r in rec_rows %}
-        <tr>
-          <td class="mono">{{ r.id }}</td>
-          <td class="mono">{{ r.ts }}</td>
-          <td>{{ r.strategy_id or "—" }}</td>
-          <td class="mono">{{ r.market_id }}</td>
-          <td class="mono">{{ "%.3f"|format(r.score) }}</td>
-          <td>{{ r.status }}</td>
-          <td class="mono"><small>{{ r.payload_json }}</small></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No persisted recommendations — run ploy-notify or rely on “Current ranked edges” above.</p>
-    {% endif %}
-  </section>
-
-  <!-- P&L Section -->
-  <section>
-    <h2>Hypothetical P&L (approved picks)</h2>
-    <div id="pnl-summary" class="metrics" style="margin-bottom:1rem">
-      <div class="metric"><div class="k">Total P&L</div><div class="v" id="pnl-total">—</div></div>
-      <div class="metric"><div class="k">Resolved</div><div class="v" id="pnl-resolved">—</div></div>
-      <div class="metric"><div class="k">Wins</div><div class="v" id="pnl-wins">—</div></div>
-      <div class="metric"><div class="k">Win Rate</div><div class="v" id="pnl-winrate">—</div></div>
-    </div>
-    <div id="pnl-strategies"></div>
-    <div id="pnl-chart" style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1rem;min-height:120px;margin-top:0.75rem">
-      <canvas id="pnlCanvas" style="width:100%;height:100px"></canvas>
-    </div>
-  </section>
-
-  <!-- Accuracy Tracking -->
-  <section>
-    <h2>Model accuracy (Brier scores)</h2>
-    <p class="log-meta">Lower Brier = better calibration (0=perfect, 0.25=coin flip). "Edge vs Market" &gt; 0 means model beats the market.</p>
-    <div id="accuracy-summary" class="metrics" style="margin-bottom:1rem">
-      <div class="metric"><div class="k">Model Brier</div><div class="v" id="acc-model-brier">—</div></div>
-      <div class="metric"><div class="k">Market Brier</div><div class="v" id="acc-market-brier">—</div></div>
-      <div class="metric"><div class="k">Edge vs Market</div><div class="v" id="acc-edge">—</div></div>
-      <div class="metric"><div class="k">Resolved</div><div class="v" id="acc-resolved">—</div></div>
-    </div>
-    <div id="accuracy-strategies"></div>
-    <div id="accuracy-empty" class="empty" style="display:none"></div>
-  </section>
-
-  <!-- Calibration Curve -->
-  <section>
-    <h2>Calibration curve</h2>
-    <p class="log-meta">Perfect calibration = diagonal line. Points above = model underconfident. Points below = model overconfident.</p>
-    <div style="display:flex;gap:1rem;flex-wrap:wrap">
-      <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:1rem;flex:1;min-width:300px;min-height:220px">
-        <canvas id="calCanvas" style="width:100%;height:200px"></canvas>
+      <div id="sim-status-banner" class="empty-box" style="margin-bottom:0.75rem;font-size:0.85rem;display:none"></div>
+      <label style="font-size:0.85rem;color:var(--muted)">
+        Profile:
+        <select id="sim-profile-select" style="margin-left:0.5rem;min-width:220px;background:#141c28;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.5rem"></select>
+      </label>
+      <div id="sim-profile-params" class="stats-row" style="margin:0.6rem 0 0.2rem;padding:0.6rem 0.75rem;background:#141c28;border-radius:6px;border:1px solid var(--border)">
+        <span>Select a profile to see thresholds.</span>
       </div>
-      <div id="cal-table" style="flex:1;min-width:250px"></div>
+      <p class="section-lead" style="margin:0.35rem 0 0.75rem;font-size:0.8rem">
+        Try stricter gates next run: higher min edge (8–12¢), confidence 0.65–0.75, model prob 0.60–0.65.
+        CLI: <span class="mono">ploy-sim init-profiles</span> then <span class="mono">ploy-sim replay --days 14</span>.
+      </p>
+      <div id="sim-summary-metrics" class="metrics" style="margin:0.75rem 0">
+        <div class="metric"><div class="k">Sim P&amp;L</div><div class="v" id="sim-pnl">—</div></div>
+        <div class="metric"><div class="k">Closed</div><div class="v" id="sim-closed">—</div></div>
+        <div class="metric"><div class="k">Win rate</div><div class="v" id="sim-winrate">—</div></div>
+        <div class="metric"><div class="k">Sharpe-like</div><div class="v" id="sim-sharpe">—</div></div>
+      </div>
+      <canvas id="simCanvas" style="width:100%;height:100px;background:#141c28;border-radius:6px;margin-bottom:0.75rem"></canvas>
+      <h3 style="font-size:0.9rem;margin:0 0 0.5rem">Profile ranking</h3>
+      <div id="sim-compare-table"></div>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Best markets (selected profile)</h3>
+      <div id="sim-best-markets"></div>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Trade history (selected profile)</h3>
+      <div id="sim-trade-history"><p class="empty">No trades loaded.</p></div>
     </div>
-    <div id="cal-empty" class="empty" style="display:none"></div>
-  </section>
+  </details>
 
-  <!-- Real-time event log -->
-  <section>
-    <h2>Live feed <span id="sse-status" style="font-size:0.7rem;color:var(--pos)">● connected</span></h2>
-    <div id="live-feed" class="log-panel" style="max-height:200px">
+  <details>
+    <summary>Pipeline &amp; data health</summary>
+    <div class="details-body">
+      <div class="status-grid" style="margin-bottom:0.75rem">
+        {% for s in pipeline_status %}
+        <div class="status-card status-{{ s.level }}">
+          <span class="status-dot"></span><span class="mono">{{ s.label }}</span>
+          <div style="color:var(--muted);margin-top:0.2rem">{{ s.detail }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="k">Markets</div><div class="v">{{ stats.markets }}</div></div>
+        <div class="metric"><div class="k">Prices</div><div class="v">{{ stats.prices }}</div></div>
+        <div class="metric"><div class="k">Game state</div><div class="v">{{ stats.game_state }}</div></div>
+        <div class="metric"><div class="k">Fair values</div><div class="v">{{ stats.fair_values }}</div></div>
+        <div class="metric"><div class="k">Saved recs</div><div class="v">{{ stats.recommendations }}</div></div>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Live NBA games</summary>
+    <div class="details-body">
+      {% if game_rows %}
+      <table>
+        <thead><tr><th>Updated</th><th>Matchup</th><th>Score</th><th>Period</th><th>Clock</th></tr></thead>
+        <tbody>
+          {% for g in game_rows %}
+          <tr>
+            <td class="mono">{{ g.ts }}</td>
+            <td>{{ g.away_team }} @ {{ g.home_team }}</td>
+            <td class="mono">{{ g.away_score }}–{{ g.home_score }}</td>
+            <td>{{ g.period or "—" }}</td>
+            <td>{{ g.time_remaining or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">No game_state — run ploy-enrich.</p>
+      {% endif %}
+    </div>
+  </details>
+
+  <details>
+    <summary>Latest price lines</summary>
+    <div class="details-body">
+      {% if price_ticks %}
+      <table>
+        <thead><tr><th>Time</th><th>Cat</th><th>Mid</th><th>Depth</th><th>Market</th></tr></thead>
+        <tbody>
+          {% for p in price_ticks[:25] %}
+          <tr>
+            <td class="mono">{{ p.ts }}</td>
+            <td><span class="badge">{{ p.category or "—" }}</span></td>
+            <td class="mono">{% if p.mid is not none %}{{ "%.3f"|format(p.mid) }}{% else %}—{% endif %}</td>
+            <td class="mono">{% if p.depth_1c is not none %}{{ "%.0f"|format(p.depth_1c) }}{% else %}—{% endif %}</td>
+            <td><small>{{ p.question or p.market_id }}</small></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">No ticks — run ploy-ingest.</p>
+      {% endif %}
+    </div>
+  </details>
+
+  <details>
+    <summary>Analytics (P&amp;L, accuracy, calibration)</summary>
+    <div class="details-body">
+      <h2 style="font-size:0.95rem">Hypothetical P&amp;L</h2>
+      <div id="pnl-summary" class="metrics" style="margin-bottom:0.75rem">
+        <div class="metric"><div class="k">Total P&amp;L</div><div class="v" id="pnl-total">—</div></div>
+        <div class="metric"><div class="k">Resolved</div><div class="v" id="pnl-resolved">—</div></div>
+        <div class="metric"><div class="k">Win rate</div><div class="v" id="pnl-winrate">—</div></div>
+      </div>
+      <div id="pnl-strategies"></div>
+      <canvas id="pnlCanvas" style="width:100%;height:80px;margin:0.5rem 0"></canvas>
+
+      <h2 style="font-size:0.95rem;margin-top:1rem">Model accuracy</h2>
+      <div id="accuracy-summary" class="metrics" style="margin-bottom:0.5rem">
+        <div class="metric"><div class="k">Model Brier</div><div class="v" id="acc-model-brier">—</div></div>
+        <div class="metric"><div class="k">Market Brier</div><div class="v" id="acc-market-brier">—</div></div>
+        <div class="metric"><div class="k">Edge</div><div class="v" id="acc-edge">—</div></div>
+      </div>
+      <div id="accuracy-strategies"></div>
+      <div id="accuracy-empty" class="empty" style="display:none"></div>
+
+      <h2 style="font-size:0.95rem;margin-top:1rem">Calibration</h2>
+      <canvas id="calCanvas" style="width:100%;height:160px"></canvas>
+      <div id="cal-table" style="margin-top:0.5rem"></div>
+      <div id="cal-empty" class="empty" style="display:none"></div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Live event stream</summary>
+    <div class="details-body">
+      <span id="sse-status" style="font-size:0.75rem;color:var(--pos)">● connected</span>
       <pre id="feed-lines"></pre>
     </div>
-  </section>
+  </details>
 
   <script>
-  // ---------- SSE Real-time updates ----------
-  (function() {
-    const statusEl = document.getElementById('sse-status');
-    const feedEl = document.getElementById('feed-lines');
-    const MAX_FEED = 50;
-    let feedLines = [];
+  function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
 
-    function addFeedLine(text) {
-      const ts = new Date().toLocaleTimeString();
-      feedLines.unshift(`[${ts}] ${text}`);
-      if (feedLines.length > MAX_FEED) feedLines.pop();
-      feedEl.textContent = feedLines.join('\n');
+  function renderPickCard(p, rank) {
+    const edgeClass = p.edge_cents >= 0 ? 'edge-pos' : 'edge-neg';
+    const pillClass = p.direction === 'BUY' ? 'pill-buy' : 'pill-sell';
+    const sign = p.edge_cents >= 0 ? '+' : '';
+    const kelly = p.kelly_frac > 0
+      ? `<span>Kelly <strong>${(p.kelly_frac * 100).toFixed(1)}%</strong></span>` : '';
+    return `<article class="rec-card rank-${rank}">
+      <div class="rec-header">
+        <span class="rank-num">#${rank}</span>
+        <h3 class="rec-title">${esc(p.question) || '(no title)'}</h3>
+        <span class="pill ${pillClass}">${p.direction}</span>
+        <span class="edge-big ${edgeClass}">${sign}${p.edge_cents.toFixed(1)}¢</span>
+      </div>
+      <div class="stats-row">
+        <span><span class="badge">${esc(p.strategy_id)}</span></span>
+        <span>Market <strong>${Math.round(p.market_prob * 100)}%</strong></span>
+        <span>Model <strong>${Math.round(p.model_prob * 100)}%</strong></span>
+        <span>Confidence <strong>${Math.round(p.confidence * 100)}%</strong></span>
+        <span>Score <strong>${p.score.toFixed(2)}</strong></span>
+        <span>Liquidity <strong>${Math.round(p.depth_1c)}</strong> @1¢</span>
+        ${kelly}
+      </div>
+      ${p.reasoning ? `<p class="reason">${esc(p.reasoning)}</p>` : ''}
+    </article>`;
+  }
+
+  async function refreshTopPicks() {
+    try {
+      const r = await fetch('/api/top-picks');
+      const d = await r.json();
+      const el = document.getElementById('top-picks-container');
+      const updated = document.getElementById('live-updated');
+      if (!d.picks || d.picks.length === 0) {
+        el.innerHTML = '<div class="empty-box">No edges above threshold right now.</div>';
+      } else {
+        el.innerHTML = d.picks.map((p, i) => renderPickCard(p, i + 1)).join('');
+      }
+      updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (e) { /* keep server-rendered */ }
+  }
+
+  async function refreshSavedRecs() {
+    try {
+      const r = await fetch('/api/recommendations');
+      const d = await r.json();
+      const el = document.getElementById('saved-recs-container');
+      if (!d.recommendations || d.recommendations.length === 0) return;
+      el.innerHTML = d.recommendations.map(r => {
+        const edgeClass = r.edge_cents >= 0 ? 'edge-pos' : 'edge-neg';
+        const sign = r.edge_cents >= 0 ? '+' : '';
+        return `<article class="rec-card">
+          <div class="rec-header">
+            <h3 class="rec-title">${esc(r.question) || esc(r.market_id)}</h3>
+            <span class="pill pill-${r.status}">${r.status}</span>
+            <span class="pill pill-${r.direction === 'BUY' ? 'buy' : 'sell'}">${r.direction}</span>
+            <span class="edge-big ${edgeClass}">${sign}${r.edge_cents.toFixed(1)}¢</span>
+          </div>
+          <div class="stats-row">
+            <span class="mono">#${r.id}</span>
+            <span><span class="badge">${esc(r.strategy_id)}</span></span>
+            <span>Score <strong>${r.score.toFixed(2)}</strong></span>
+          </div>
+          ${r.reasoning ? `<p class="reason">${esc(r.reasoning)}</p>` : ''}
+        </article>`;
+      }).join('');
+    } catch (e) { /* silent */ }
+  }
+
+  setInterval(refreshTopPicks, 15000);
+  setInterval(refreshSavedRecs, 30000);
+
+  // Simulation charts
+  (function() {
+    const sel = document.getElementById('sim-profile-select');
+    const compareEl = document.getElementById('sim-compare-table');
+    const bestEl = document.getElementById('sim-best-markets');
+    const paramsEl = document.getElementById('sim-profile-params');
+    const historyEl = document.getElementById('sim-trade-history');
+    const bannerEl = document.getElementById('sim-status-banner');
+    const trackerEl = document.getElementById('sim-tracker');
+    let profileMap = {};
+
+    function formatHours(h) {
+      if (h == null) return '—';
+      if (h < 1) return Math.round(h * 60) + 'm';
+      if (h < 48) return h.toFixed(1) + 'h';
+      return (h / 24).toFixed(1) + 'd';
     }
 
-    function updateMetric(id, value) {
-      const el = document.getElementById(id);
-      if (el) el.textContent = value;
+    function renderTracker(d) {
+      if (!d || !d.current_run) {
+        trackerEl.innerHTML = '<p class="empty">No forward run yet. Start with <span class="mono">ploy-sim forward</span> ' +
+          '(or <span class="mono">./scripts/run-local-stack.sh</span>).</p>';
+        return;
+      }
+      const run = d.current_run;
+      const t = d.run_totals || {};
+      const active = d.forward_active;
+      const statusCls = active ? 'live' : (run.ended_at ? 'stopped' : 'idle');
+      const statusLabel = active ? 'FORWARD LIVE' : (run.ended_at ? 'RUN ENDED' : 'IDLE');
+      const pnl = t.total_pnl_cents != null ? t.total_pnl_cents : 0;
+      const pnlColor = pnl >= 0 ? 'var(--pos)' : 'var(--neg)';
+      const remain = active && run.hours_remaining != null
+        ? formatHours(run.hours_remaining) + ' left'
+        : (run.planned_end ? 'ends ' + run.planned_end.slice(0, 16).replace('T', ' ') : 'unlimited');
+      let html = '<div class="sim-tracker-head">' +
+        '<h3>Simulation tracker</h3>' +
+        '<span class="sim-tracker-status ' + statusCls + '">' + statusLabel + '</span>' +
+        '<span class="sim-tracker-meta">Run #' + run.id + ' · started ' + (run.started_at || '').slice(0, 16).replace('T', ' ') +
+        (active ? ' · ' + remain : '') + '</span></div>';
+      html += '<div class="metrics">' +
+        '<div class="metric"><div class="k">Open</div><div class="v">' + (t.open ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">Closed</div><div class="v">' + (t.closed ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">Open BUY</div><div class="v" style="color:var(--pos)">' + (t.open_buys ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">Open SELL</div><div class="v" style="color:var(--neg)">' + (t.open_sells ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">Run P&amp;L</div><div class="v" style="color:' + pnlColor + '">' +
+        (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '¢</div></div>' +
+        '<div class="metric"><div class="k">24h opened</div><div class="v">' + (t.opened_24h ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">24h closed</div><div class="v">' + (t.closed_24h ?? '—') + '</div></div>' +
+        '<div class="metric"><div class="k">Elapsed</div><div class="v">' + formatHours(run.elapsed_hours) + '</div></div>' +
+        '</div>';
+      const recent = d.recent_trades || [];
+      if (recent.length) {
+        html += '<div class="sim-recent"><strong style="font-size:0.8rem">Recent activity (this run)</strong>' +
+          '<table><thead><tr><th>When</th><th>Dir</th><th>Profile</th><th>Status</th><th>P&amp;L</th><th>Market</th></tr></thead><tbody>';
+        recent.forEach(tr => {
+          const when = (tr.event_at || tr.opened_at || '').slice(0, 19);
+          const pnlStr = tr.pnl_cents != null ? (tr.pnl_cents >= 0 ? '+' : '') + tr.pnl_cents.toFixed(1) + '¢' : '—';
+          const pnlC = tr.pnl_cents != null ? (tr.pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)') : 'var(--muted)';
+          const ev = tr.status === 'closed' ? 'close' : 'open';
+          html += '<tr><td class="mono">' + when + '</td>' +
+            '<td><span class="pill pill-' + (tr.direction === 'BUY' ? 'buy' : 'sell') + '" style="font-size:0.65rem">' +
+            tr.direction + '</span></td>' +
+            '<td class="mono">' + esc(tr.profile_id) + '</td>' +
+            '<td>' + ev + '</td>' +
+            '<td class="mono" style="color:' + pnlC + '">' + pnlStr + '</td>' +
+            '<td><small>' + esc((tr.question || tr.market_id).slice(0, 48)) + '</small></td></tr>';
+        });
+        html += '</tbody></table></div>';
+      } else {
+        html += '<p class="empty" style="margin:0.5rem 0 0">No trades on this run yet — waiting for signals that pass profile gates.</p>';
+      }
+      trackerEl.innerHTML = html;
     }
 
-    const es = new EventSource('/events');
-
-    es.addEventListener('price_tick', function(e) {
-      const d = JSON.parse(e.data);
-      addFeedLine(`💰 Price: ${d.category || '?'} mid=${d.mid?.toFixed(3) || '?'} — ${(d.question || d.market_id).slice(0, 60)}`);
-    });
-
-    es.addEventListener('new_signal', function(e) {
-      const d = JSON.parse(e.data);
-      const dir = d.edge_cents > 0 ? 'BUY' : 'SELL';
-      addFeedLine(`📊 Signal: ${dir} ${Math.abs(d.edge_cents).toFixed(1)}¢ [${d.strategy_id}] — ${(d.question || d.market_id).slice(0, 50)}`);
-    });
-
-    es.addEventListener('recommendation_update', function(e) {
-      const d = JSON.parse(e.data);
-      addFeedLine(`⭐ Rec #${d.id}: ${d.status} (score ${d.score.toFixed(2)}) [${d.strategy_id}]`);
-    });
-
-    es.addEventListener('pipeline_status', function(e) {
-      const d = JSON.parse(e.data);
-      updateMetric('stat-markets', d.markets);
-      updateMetric('stat-prices', d.prices);
-      updateMetric('stat-fv', d.fair_values);
-      updateMetric('stat-recs', d.recommendations);
-    });
-
-    es.addEventListener('error', function(e) {
-      addFeedLine('⚠️ SSE error — reconnecting...');
-    });
-
-    es.onopen = function() {
-      statusEl.textContent = '● connected';
-      statusEl.style.color = 'var(--pos)';
-    };
-    es.onerror = function() {
-      statusEl.textContent = '● reconnecting';
-      statusEl.style.color = 'var(--neg)';
-    };
-  })();
-
-  // ---------- P&L Data ----------
-  (function() {
-    async function loadPnl() {
+    async function loadTracker() {
       try {
-        const r = await fetch('/api/pnl');
-        const d = await r.json();
-        document.getElementById('pnl-total').textContent = (d.total_pnl_cents >= 0 ? '+' : '') + d.total_pnl_cents.toFixed(1) + '¢';
-        document.getElementById('pnl-total').style.color = d.total_pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)';
-        document.getElementById('pnl-resolved').textContent = d.total_resolved;
-        document.getElementById('pnl-wins').textContent = d.wins;
-        document.getElementById('pnl-winrate').textContent = (d.win_rate * 100).toFixed(1) + '%';
+        const d = await (await fetch('/api/sim/tracker')).json();
+        renderTracker(d);
+      } catch (e) {
+        trackerEl.innerHTML = '<p class="empty">Simulation tracker unavailable.</p>';
+      }
+    }
 
-        // Strategy breakdown
-        const stEl = document.getElementById('pnl-strategies');
-        if (d.strategies && d.strategies.length > 0) {
-          let html = '<table><thead><tr><th>Strategy</th><th>N</th><th>P&L</th><th>Wins</th><th>Win%</th></tr></thead><tbody>';
-          d.strategies.forEach(s => {
-            const color = s.total_pnl >= 0 ? 'var(--pos)' : 'var(--neg)';
-            html += `<tr><td class="mono">${s.strategy_id}</td><td>${s.n}</td><td class="mono" style="color:${color}">${s.total_pnl >= 0 ? '+' : ''}${s.total_pnl.toFixed(1)}¢</td><td>${s.wins}</td><td>${(s.win_rate*100).toFixed(0)}%</td></tr>`;
+    function renderProfileParams(pid) {
+      const p = profileMap[pid];
+      if (!p) {
+        paramsEl.innerHTML = '<span>Select a profile to see thresholds.</span>';
+        return;
+      }
+      paramsEl.innerHTML = `
+        <span><strong>Min edge:</strong> ${p.min_edge_cents.toFixed(0)}¢</span>
+        <span><strong>Min confidence:</strong> ${(p.min_confidence * 100).toFixed(0)}%</span>
+        <span><strong>Min model prob:</strong> ${(p.min_model_prob * 100).toFixed(0)}% (BUY: model ≥ this; SELL: 1−model ≥ this)</span>
+        <span><strong>Cooldown:</strong> ${Math.round(p.cooldown_sec / 60)} min</span>
+        <span class="mono" style="color:var(--muted)">${esc(p.id)}</span>`;
+    }
+
+    async function loadProfiles() {
+      try {
+        const d = await (await fetch('/api/sim/profiles')).json();
+        profileMap = {};
+        (d.profiles || []).forEach(p => { profileMap[p.id] = p; });
+        const existing = sel.value;
+        sel.innerHTML = '';
+        if (!d.profiles || !d.profiles.length) {
+          sel.innerHTML = '<option value="">— no profiles (run ploy-sim init-profiles) —</option>';
+          bannerEl.innerHTML = 'No <span class="mono">sim_profiles</span> rows. Run: <span class="mono">ploy-migrate</span> then <span class="mono">ploy-sim init-profiles</span>.';
+          return;
+        }
+        d.profiles.forEach(p => {
+          const o = document.createElement('option');
+          o.value = p.id;
+          o.textContent = p.id + ' — ' + p.label;
+          sel.appendChild(o);
+        });
+        if (existing && profileMap[existing]) sel.value = existing;
+        else if (d.profiles.length) sel.value = d.profiles[0].id;
+        if (bannerEl) {
+          bannerEl.innerHTML = `${d.count} threshold profiles loaded.`;
+        }
+        if (sel.value) {
+          renderProfileParams(sel.value);
+          loadProfileSummary(sel.value);
+        }
+      } catch (e) {
+        bannerEl.textContent = 'Simulation API unavailable — is ploy-web running?';
+      }
+    }
+
+    function renderCompare(rows) {
+      if (!rows || !rows.length) {
+        compareEl.innerHTML = '<p class="empty">No closed trades yet — run <span class="mono">ploy-sim replay --days 14</span> (needs fair_values from ploy-reason).</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Profile</th><th>P&amp;L</th><th>Closed</th><th>Win%</th></tr></thead><tbody>';
+      rows.forEach(r => {
+        const wr = r.win_rate != null ? (r.win_rate * 100).toFixed(1) + '%' : 'n/a';
+        const color = r.total_pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)';
+        html += `<tr><td class="mono">${r.profile_id}</td><td class="mono" style="color:${color}">${r.total_pnl_cents >= 0 ? '+' : ''}${r.total_pnl_cents.toFixed(1)}¢</td><td>${r.closed_count}</td><td>${wr}</td></tr>`;
+      });
+      html += '</tbody></table>';
+      compareEl.innerHTML = html;
+    }
+
+    async function loadRunsBanner() {
+      try {
+        const d = await (await fetch('/api/sim/runs?limit=3')).json();
+        if (!d.runs || !d.runs.length) return;
+        const latest = d.runs[0];
+        const extra = d.runs.length > 1 ? ` (${d.runs.length} recent runs)` : '';
+        bannerEl.innerHTML += `<br/>Last run: <strong>${latest.mode}</strong> #${latest.id} — ` +
+          `${latest.trade_count} trades (${latest.closed_count} closed) — ` +
+          `${latest.started_at}${latest.notes ? ' · ' + esc(latest.notes) : ''}${extra}`;
+      } catch (e) { /* ignore */ }
+    }
+
+    async function loadTradeHistory(pid) {
+      try {
+        const d = await (await fetch('/api/sim/trades?profile_id=' + encodeURIComponent(pid) + '&limit=40')).json();
+        if (!d.trades || !d.trades.length) {
+          historyEl.innerHTML = '<p class="empty">No trades for this profile yet.</p>';
+          return;
+        }
+        let html = '<table><thead><tr><th>Opened</th><th>Dir</th><th>Edge</th><th>Conf</th><th>Model</th><th>P&amp;L</th><th>Status</th><th>Market</th></tr></thead><tbody>';
+        d.trades.forEach(t => {
+          const pnl = t.pnl_cents != null ? (t.pnl_cents >= 0 ? '+' : '') + t.pnl_cents.toFixed(1) + '¢' : '—';
+          const pnlColor = t.pnl_cents != null ? (t.pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)') : 'var(--muted)';
+          const edgeColor = t.edge_cents >= 0 ? 'var(--pos)' : 'var(--neg)';
+          html += `<tr>
+            <td class="mono">${(t.opened_at || '').slice(0, 19)}</td>
+            <td><span class="pill pill-${t.direction === 'BUY' ? 'buy' : 'sell'}" style="font-size:0.65rem">${t.direction}</span></td>
+            <td class="mono" style="color:${edgeColor}">${t.edge_cents >= 0 ? '+' : ''}${t.edge_cents.toFixed(1)}¢</td>
+            <td class="mono">${(t.confidence * 100).toFixed(0)}%</td>
+            <td class="mono">${(t.model_prob * 100).toFixed(0)}%</td>
+            <td class="mono" style="color:${pnlColor}">${pnl}</td>
+            <td>${t.status}${t.close_reason ? '<br/><small>' + esc(t.close_reason) + '</small>' : ''}</td>
+            <td><small>${esc(t.question || t.market_id)}</small></td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        historyEl.innerHTML = html;
+      } catch (e) {
+        historyEl.innerHTML = '<p class="empty">Could not load trade history.</p>';
+      }
+    }
+
+    async function loadCompare() {
+      try {
+        const d = await (await fetch('/api/sim/summary')).json();
+        renderCompare(d.compare || []);
+      } catch (e) { compareEl.innerHTML = '<p class="empty">Simulation summary unavailable</p>'; }
+    }
+
+    async function loadProfileSummary(pid) {
+      if (!pid) return;
+      renderProfileParams(pid);
+      loadTradeHistory(pid);
+      try {
+        const d = await (await fetch('/api/sim/summary?profile_id=' + encodeURIComponent(pid))).json();
+        const t = d.totals || {};
+        const pnlEl = document.getElementById('sim-pnl');
+        pnlEl.textContent = (t.total_pnl_cents >= 0 ? '+' : '') + (t.total_pnl_cents || 0).toFixed(1) + '¢';
+        pnlEl.style.color = (t.total_pnl_cents || 0) >= 0 ? 'var(--pos)' : 'var(--neg)';
+        document.getElementById('sim-closed').textContent = t.closed_count ?? '—';
+        document.getElementById('sim-winrate').textContent = t.win_rate != null ? (t.win_rate * 100).toFixed(1) + '%' : '—';
+        document.getElementById('sim-sharpe').textContent = t.sharpe_like != null ? t.sharpe_like.toFixed(3) : '—';
+
+        if (d.best_fit && d.best_fit.length) {
+          let html = '<table><thead><tr><th>Market</th><th>P&amp;L</th><th>N</th></tr></thead><tbody>';
+          d.best_fit.forEach(m => {
+            html += `<tr><td>${(m.question || m.market_id).slice(0, 60)}</td><td class="mono">${m.total_pnl_cents >= 0 ? '+' : ''}${m.total_pnl_cents.toFixed(1)}¢</td><td>${m.closed_count}</td></tr>`;
           });
           html += '</tbody></table>';
-          stEl.innerHTML = html;
+          bestEl.innerHTML = html;
+        } else {
+          bestEl.innerHTML = '<p class="empty">No best-fit markets yet (need ≥10 closed trades per market).</p>';
         }
 
-        // Simple cumulative P&L chart (canvas sparkline)
-        const canvas = document.getElementById('pnlCanvas');
-        if (canvas && d.cumulative && d.cumulative.length > 1) {
+        const sr = await (await fetch('/api/sim/series?profile_id=' + encodeURIComponent(pid))).json();
+        const canvas = document.getElementById('simCanvas');
+        const series = sr.series || [];
+        if (canvas && series.length > 1) {
           const ctx = canvas.getContext('2d');
           const W = canvas.offsetWidth; const H = 100;
           canvas.width = W; canvas.height = H;
-          const pts = d.cumulative.map(c => c.cumulative);
+          const pts = series.map(s => s.cumulative);
           const mn = Math.min(...pts, 0); const mx = Math.max(...pts, 1);
           const rng = mx - mn || 1;
           ctx.clearRect(0, 0, W, H);
-          ctx.strokeStyle = pts[pts.length-1] >= 0 ? '#3ecf8e' : '#f07178';
+          ctx.strokeStyle = pts[pts.length - 1] >= 0 ? '#3ecf8e' : '#f07178';
           ctx.lineWidth = 2;
           ctx.beginPath();
           pts.forEach((v, i) => {
@@ -425,164 +779,79 @@
             i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
           });
           ctx.stroke();
-          // Zero line
-          const zy = H - ((0 - mn) / rng) * (H - 10) - 5;
-          ctx.strokeStyle = 'rgba(139,156,179,0.3)'; ctx.lineWidth = 1;
-          ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(0,zy); ctx.lineTo(W,zy); ctx.stroke();
         }
-      } catch(e) { /* silent */ }
+      } catch (e) { /* silent */ }
     }
-    loadPnl();
-    setInterval(loadPnl, 30000); // refresh P&L every 30s
+
+    sel.addEventListener('change', () => loadProfileSummary(sel.value));
+    loadTracker();
+    loadProfiles().then(() => loadRunsBanner());
+    loadCompare();
+    setInterval(loadCompare, 60000);
+    setInterval(loadTracker, 30000);
+    setInterval(() => {
+      if (sel.value) loadProfileSummary(sel.value);
+      loadRunsBanner();
+    }, 60000);
   })();
 
-  // ---------- Accuracy Data ----------
+  // SSE feed (abbreviated)
   (function() {
+    const statusEl = document.getElementById('sse-status');
+    const feedEl = document.getElementById('feed-lines');
+    let feedLines = [];
+    function addFeedLine(text) {
+      feedLines.unshift('[' + new Date().toLocaleTimeString() + '] ' + text);
+      if (feedLines.length > 40) feedLines.pop();
+      feedEl.textContent = feedLines.join('\n');
+    }
+    const es = new EventSource('/events');
+    es.addEventListener('new_signal', e => {
+      const d = JSON.parse(e.data);
+      addFeedLine('Signal: ' + (d.edge_cents > 0 ? 'BUY' : 'SELL') + ' ' + Math.abs(d.edge_cents).toFixed(1) + '¢');
+      refreshTopPicks();
+    });
+    es.addEventListener('recommendation_update', e => {
+      addFeedLine('Rec #' + JSON.parse(e.data).id);
+      refreshSavedRecs();
+    });
+    es.onopen = () => { statusEl.textContent = '● connected'; statusEl.style.color = 'var(--pos)'; };
+    es.onerror = () => { statusEl.textContent = '● reconnecting'; statusEl.style.color = 'var(--neg)'; };
+  })();
+
+  // P&L + accuracy + calibration (unchanged loaders)
+  (function() {
+    async function loadPnl() {
+      try {
+        const d = await (await fetch('/api/pnl')).json();
+        const t = document.getElementById('pnl-total');
+        t.textContent = (d.total_pnl_cents >= 0 ? '+' : '') + d.total_pnl_cents.toFixed(1) + '¢';
+        t.style.color = d.total_pnl_cents >= 0 ? 'var(--pos)' : 'var(--neg)';
+        document.getElementById('pnl-resolved').textContent = d.total_resolved;
+        document.getElementById('pnl-winrate').textContent = (d.win_rate * 100).toFixed(1) + '%';
+      } catch(e) {}
+    }
     async function loadAccuracy() {
       try {
-        const r = await fetch('/api/accuracy');
-        const d = await r.json();
-        const emptyEl = document.getElementById('accuracy-empty');
-        const stratEl = document.getElementById('accuracy-strategies');
-
+        const d = await (await fetch('/api/accuracy')).json();
         if (!d.has_data) {
-          emptyEl.textContent = d.message || 'No resolved markets yet.';
-          emptyEl.style.display = 'block';
-          // Still show model-vs-market Brier if available
-          if (d.overall_brier_vs_market !== null) {
-            document.getElementById('acc-model-brier').textContent = d.overall_brier_vs_market.toFixed(4) + ' (vs market)';
-          }
+          document.getElementById('accuracy-empty').textContent = d.message || 'No resolved picks yet.';
+          document.getElementById('accuracy-empty').style.display = 'block';
           return;
         }
-        emptyEl.style.display = 'none';
-
         const t = d.totals;
-        document.getElementById('acc-model-brier').textContent = t.brier_model !== null ? t.brier_model.toFixed(4) : '—';
-        document.getElementById('acc-market-brier').textContent = t.brier_market !== null ? t.brier_market.toFixed(4) : '—';
-
+        document.getElementById('acc-model-brier').textContent = t.brier_model?.toFixed(4) ?? '—';
+        document.getElementById('acc-market-brier').textContent = t.brier_market?.toFixed(4) ?? '—';
         const edgeEl = document.getElementById('acc-edge');
-        if (t.edge_vs_market !== null) {
-          const sign = t.edge_vs_market >= 0 ? '+' : '';
-          edgeEl.textContent = sign + t.edge_vs_market.toFixed(4);
+        if (t.edge_vs_market != null) {
+          edgeEl.textContent = (t.edge_vs_market >= 0 ? '+' : '') + t.edge_vs_market.toFixed(4);
           edgeEl.style.color = t.edge_vs_market >= 0 ? 'var(--pos)' : 'var(--neg)';
         }
-        document.getElementById('acc-resolved').textContent = t.n;
-
-        // Strategy breakdown table
-        if (d.strategies && d.strategies.length > 0) {
-          let html = '<table><thead><tr><th>Strategy</th><th>N</th><th>Model Brier</th><th>Market Brier</th><th>Edge</th><th>Accuracy</th></tr></thead><tbody>';
-          d.strategies.forEach(s => {
-            const edgeColor = s.edge_vs_market >= 0 ? 'var(--pos)' : 'var(--neg)';
-            const edgeSign = s.edge_vs_market >= 0 ? '+' : '';
-            html += `<tr>
-              <td class="mono">${s.strategy_id}</td>
-              <td>${s.n}</td>
-              <td class="mono">${s.brier_model.toFixed(4)}</td>
-              <td class="mono">${s.brier_market.toFixed(4)}</td>
-              <td class="mono" style="color:${edgeColor}">${edgeSign}${s.edge_vs_market.toFixed(4)}</td>
-              <td class="mono">${s.accuracy_pct.toFixed(1)}%</td>
-            </tr>`;
-          });
-          html += '</tbody></table>';
-          stratEl.innerHTML = html;
-        }
-      } catch(e) { /* silent */ }
+      } catch(e) {}
     }
-    loadAccuracy();
-    setInterval(loadAccuracy, 60000); // refresh accuracy every 60s
-  })();
-
-  // ---------- Calibration Curve ----------
-  (function() {
-    async function loadCalibration() {
-      try {
-        const r = await fetch('/api/calibration');
-        const d = await r.json();
-        const emptyEl = document.getElementById('cal-empty');
-        const tableEl = document.getElementById('cal-table');
-
-        if (!d.has_data) {
-          emptyEl.textContent = 'No resolved markets yet for calibration.';
-          emptyEl.style.display = 'block';
-          return;
-        }
-        emptyEl.style.display = 'none';
-
-        // Draw calibration chart
-        const canvas = document.getElementById('calCanvas');
-        if (canvas && d.buckets.length > 0) {
-          const ctx = canvas.getContext('2d');
-          const W = canvas.offsetWidth; const H = 200;
-          canvas.width = W; canvas.height = H;
-          const pad = 30;
-          const pw = W - pad * 2; const ph = H - pad * 2;
-
-          ctx.clearRect(0, 0, W, H);
-
-          // Diagonal (perfect calibration)
-          ctx.strokeStyle = 'rgba(139,156,179,0.3)';
-          ctx.lineWidth = 1; ctx.setLineDash([4,4]);
-          ctx.beginPath();
-          ctx.moveTo(pad, pad + ph);
-          ctx.lineTo(pad + pw, pad);
-          ctx.stroke(); ctx.setLineDash([]);
-
-          // Model calibration line
-          ctx.strokeStyle = '#3d9eff'; ctx.lineWidth = 2;
-          ctx.beginPath();
-          d.buckets.forEach((b, i) => {
-            const x = pad + b.avg_predicted * pw;
-            const y = pad + ph - b.actual_rate * ph;
-            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-          });
-          ctx.stroke();
-
-          // Dots
-          d.buckets.forEach(b => {
-            const x = pad + b.avg_predicted * pw;
-            const y = pad + ph - b.actual_rate * ph;
-            ctx.fillStyle = '#3d9eff';
-            ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
-            // N label
-            ctx.fillStyle = 'var(--muted)'; ctx.font = '10px sans-serif';
-            ctx.fillText('n=' + b.n, x + 6, y - 4);
-          });
-
-          // Market calibration (if available)
-          if (d.buckets[0].market_predicted !== undefined) {
-            ctx.strokeStyle = 'rgba(240,113,120,0.6)'; ctx.lineWidth = 1.5;
-            ctx.setLineDash([3,3]);
-            ctx.beginPath();
-            d.buckets.forEach((b, i) => {
-              const x = pad + b.market_predicted * pw;
-              const y = pad + ph - b.actual_rate * ph;
-              i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-            });
-            ctx.stroke(); ctx.setLineDash([]);
-          }
-
-          // Axis labels
-          ctx.fillStyle = 'var(--muted)'; ctx.font = '11px sans-serif';
-          ctx.fillText('Predicted', W/2 - 25, H - 2);
-          ctx.save(); ctx.translate(10, H/2 + 15); ctx.rotate(-Math.PI/2);
-          ctx.fillText('Actual', 0, 0); ctx.restore();
-        }
-
-        // Table
-        if (d.buckets.length > 0) {
-          let html = '<table><thead><tr><th>Bucket</th><th>N</th><th>Predicted</th><th>Actual</th><th>Gap</th></tr></thead><tbody>';
-          d.buckets.forEach(b => {
-            const gap = b.avg_predicted - b.actual_rate;
-            const gapColor = Math.abs(gap) < 0.05 ? 'var(--pos)' : Math.abs(gap) < 0.1 ? '#e7c547' : 'var(--neg)';
-            html += `<tr><td class="mono">${b.range}</td><td>${b.n}</td><td class="mono">${b.avg_predicted.toFixed(3)}</td><td class="mono">${b.actual_rate.toFixed(3)}</td><td class="mono" style="color:${gapColor}">${gap >= 0 ? '+' : ''}${gap.toFixed(3)}</td></tr>`;
-          });
-          html += '</tbody></table>';
-          tableEl.innerHTML = html;
-        }
-      } catch(e) { /* silent */ }
-    }
-    loadCalibration();
-    setInterval(loadCalibration, 120000);
+    loadPnl(); loadAccuracy();
+    setInterval(loadPnl, 60000);
+    setInterval(loadAccuracy, 120000);
   })();
   </script>
 </body>

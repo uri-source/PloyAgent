@@ -40,6 +40,7 @@ only through the database — no message broker, no shared memory.
 | `ploy-migrate` | `db/migrate.py` | Run all SQL migrations in order |
 | `ploy-train-model` | `reasoning/train_model.py` | Retrain logistic regression from DB data |
 | `ploy-backtest` | `backtest/__main__.py` | Full backtest: Brier, calibration, P&L sim |
+| `ploy-sim` | `sim/__main__.py` | Paper-trading simulation across threshold profiles |
 
 ---
 
@@ -285,6 +286,44 @@ The web dashboard at `:8765` includes:
 - **P&L tracking** (`/api/pnl`) — cumulative profit/loss, per-strategy breakdown
 - **Accuracy** (`/api/accuracy`) — per-strategy Brier scores vs resolved outcomes
 - **Calibration** (`/api/calibration`) — predicted vs actual bucketed curve
+- **Simulation** (`/api/sim/*`) — paper-trading P&L by threshold profile, per-market best fit
+
+---
+
+## Paper-trading simulation (`ploy-sim`)
+
+One `ploy-reason` pipeline writes `fair_values`; many **sim profiles** (edge × confidence × model_prob thresholds) read the same data — do not run separate ingest/reason stacks per threshold.
+
+### Setup
+```bash
+ploy-migrate                    # includes 005_simulation.sql
+ploy-sim init-profiles          # 36 profiles (use --subset for 12)
+ploy-sim replay --days 14       # historical walk → sim_trades
+ploy-sim compare                # rank profiles by P&L
+ploy-sim report --profile e5_c65_m60 --by market
+ploy-sim forward                # live paper trading (alongside ploy-reason)
+```
+
+### Threshold gates (per profile)
+- **BUY:** `edge_cents >= min_edge`, `confidence >= min_confidence`, `model_prob >= min_model_prob`
+- **SELL:** `edge_cents <= -min_edge`, same confidence, `(1 - model_prob) >= min_model_prob`
+
+### How long to run (defaults)
+| Mode | Default | Env | Success criteria |
+|------|---------|-----|------------------|
+| **Forward** | **14 days** then auto-stop | `SIM_FORWARD_RUN_HOURS=336` (`0` = unlimited) | ≥50 closed trades on top profile, or full window |
+| **Replay** | **14-day** lookback | `SIM_REPLAY_DAYS=14` | ≥30 closed trades/profile (smoke); ≥100 for ranking |
+| **Charts** | — | — | ≥20 closed trades on a profile |
+
+Shorter smoke test: `ploy-sim forward --hours 48` or `ploy-sim replay --days 7`.
+
+### Dashboard
+Open **Simulation (paper trading)** on the web UI. **Tracker:** `GET /api/sim/tracker` (forward run status, BUY/SELL counts, recent trades). Also `/api/sim/summary`, `/api/sim/series?profile_id=...`.
+
+### Config
+- `SIM_FORWARD_INTERVAL_SEC` (default 5) — forward loop tick interval
+- `SIM_FORWARD_RUN_HOURS` (default 336) — forward auto-stop; `0` = until manual stop
+- `SIM_REPLAY_DAYS` (default 14) — default `ploy-sim replay` window
 
 ---
 
@@ -383,6 +422,7 @@ src/ploy_agent/
   notifier/       composite ranking, Slack posting, P&L resolution, smart dedup
   web/            FastAPI dashboard + SSE + accuracy/calibration APIs
   backtest/       full historical accuracy harness
+  sim/            paper-trading profiles, replay, forward, metrics
   db/             migration runner + SQL files
 scripts/          start_all.sh, start_all.ps1
 tests/            54 unit tests (model, confidence, book_math, resolution, scoring, etc.)

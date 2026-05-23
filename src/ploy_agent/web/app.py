@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -163,9 +163,24 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Polymarket Edge Agent", lifespan=_lifespan)
 
 
+def _payload_dict(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 def _pick_dicts(picks: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for p in picks:
+        edge = float(p.edge_cents)
         out.append(
             {
                 "strategy_id": p.strategy_id,
@@ -174,11 +189,39 @@ def _pick_dicts(picks: list[Any]) -> list[dict[str, Any]]:
                 "mid": p.mid,
                 "model_prob": p.model_prob,
                 "market_prob": p.market_prob,
-                "edge_cents": p.edge_cents,
+                "edge_cents": edge,
+                "direction": "BUY" if edge >= 0 else "SELL",
                 "confidence": p.confidence,
                 "reasoning": p.reasoning or "",
                 "depth_1c": p.depth_1c,
                 "score": p.score,
+                "kelly_frac": getattr(p, "kelly_frac", 0.0) or 0.0,
+            }
+        )
+    return out
+
+
+def _recommendation_dicts(rows: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        pj = _payload_dict(r.get("payload_json"))
+        edge = float(pj.get("edge_cents", 0))
+        out.append(
+            {
+                "id": int(r["id"]),
+                "ts": r["ts"],
+                "market_id": r["market_id"],
+                "question": r.get("question") or "",
+                "category": r.get("category") or "",
+                "strategy_id": r.get("strategy_id") or pj.get("strategy_id") or "",
+                "status": r.get("status") or "pending",
+                "score": float(r["score"]) if r.get("score") is not None else 0.0,
+                "edge_cents": edge,
+                "direction": "BUY" if edge >= 0 else "SELL",
+                "model_prob": pj.get("model_prob"),
+                "market_prob": pj.get("market_prob"),
+                "confidence": pj.get("confidence"),
+                "reasoning": (pj.get("reasoning") or "")[:400],
             }
         )
     return out
@@ -227,19 +270,18 @@ async def dashboard(request: Request) -> Any:
         )
         rec_rows = await conn.fetch(
             """
-            SELECT id, ts, market_id, strategy_id, score, status, payload_json
-            FROM recommendations
-            ORDER BY ts DESC
-            LIMIT 40
+            SELECT r.id, r.ts, r.market_id, r.strategy_id, r.score, r.status, r.payload_json,
+                   m.question, m.category
+            FROM recommendations r
+            JOIN markets m ON m.id = r.market_id
+            ORDER BY
+              CASE r.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+              r.score DESC NULLS LAST,
+              r.ts DESC
+            LIMIT 20
             """
         )
-        rec_display = []
-        for r in rec_rows:
-            d = dict(r)
-            pj = d.get("payload_json")
-            if isinstance(pj, (dict, list)):
-                d["payload_json"] = json.dumps(pj)
-            rec_display.append(d)
+        saved_recommendations = _recommendation_dicts([dict(r) for r in rec_rows])
         game_rows = await conn.fetch(
             """
             WITH latest AS (
@@ -274,9 +316,11 @@ async def dashboard(request: Request) -> Any:
         "index.html",
         {
             "picks": _pick_dicts(picks),
+            "saved_recommendations": saved_recommendations,
+            "rank_top_n": settings.rank_top_n,
+            "min_edge_cents": settings.min_edge_cents,
             "stats": stats,
             "fair_rows": [dict(r) for r in fair_rows],
-            "rec_rows": rec_display,
             "game_rows": [dict(r) for r in game_rows],
             "price_ticks": [dict(r) for r in price_ticks],
             "pipeline_status": pipeline_status,
@@ -288,6 +332,208 @@ async def dashboard(request: Request) -> Any:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ---------- Simulation (paper trading) ----------
+
+
+@app.get("/api/sim/profiles")
+async def sim_profiles() -> dict[str, Any]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, min_edge_cents, min_confidence, min_model_prob,
+                   max_open_per_market, cooldown_sec
+            FROM sim_profiles ORDER BY id
+            """
+        )
+    profiles: list[dict[str, Any]] = []
+    for r in rows:
+        edge = float(r["min_edge_cents"])
+        conf = float(r["min_confidence"])
+        model = float(r["min_model_prob"])
+        profiles.append(
+            {
+                "id": str(r["id"]),
+                "min_edge_cents": edge,
+                "min_confidence": conf,
+                "min_model_prob": model,
+                "max_open_per_market": int(r["max_open_per_market"]),
+                "cooldown_sec": int(r["cooldown_sec"]),
+                "label": (
+                    f"≥{edge:.0f}¢ edge · ≥{conf * 100:.0f}% confidence · "
+                    f"≥{model * 100:.0f}% model prob"
+                ),
+            }
+        )
+    return {"profiles": profiles, "count": len(profiles)}
+
+
+@app.get("/api/sim/summary")
+async def sim_summary(profile_id: str | None = None) -> dict[str, Any]:
+    from ploy_agent.sim.metrics import (
+        best_fit_markets,
+        compare_profiles,
+        group_summary,
+        summarize_trades,
+        trades_from_rows,
+    )
+    from ploy_agent.sim import repo as sim_repo
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if profile_id:
+            rows = await sim_repo.fetch_trades(conn, profile_id=profile_id, limit=20_000)
+            trades = trades_from_rows([dict(r) for r in rows])
+            return {
+                "profile_id": profile_id,
+                "totals": summarize_trades(trades),
+                "by_category": group_summary(trades, lambda t: t.category),
+                "by_market": group_summary(trades, lambda t: t.market_id)[:15],
+                "by_strategy": group_summary(trades, lambda t: t.strategy_id),
+                "best_fit": best_fit_markets(trades)[:10],
+            }
+        rows = await sim_repo.fetch_trades(conn, limit=50_000)
+    trades = trades_from_rows([dict(r) for r in rows])
+    return {"compare": compare_profiles(trades)[:20]}
+
+
+@app.get("/api/sim/series")
+async def sim_series(profile_id: str) -> dict[str, Any]:
+    from ploy_agent.sim.metrics import daily_cumulative_series, trades_from_rows
+    from ploy_agent.sim import repo as sim_repo
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await sim_repo.fetch_trades(conn, profile_id=profile_id, limit=20_000)
+    trades = trades_from_rows([dict(r) for r in rows])
+    return {"profile_id": profile_id, "series": daily_cumulative_series(trades)}
+
+
+@app.get("/api/sim/trades")
+async def sim_trades_list(
+    profile_id: str | None = None,
+    sim_run_id: int | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    from ploy_agent.sim import repo as sim_repo
+    from ploy_agent.sim.tracker import trade_row_to_dict
+
+    limit = min(max(limit, 1), 200)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await sim_repo.fetch_trades(
+            conn,
+            profile_id=profile_id,
+            sim_run_id=sim_run_id,
+            limit=limit,
+        )
+
+    trades = [trade_row_to_dict(r) for r in rows]
+    return {"trades": trades, "count": len(trades)}
+
+
+@app.get("/api/sim/tracker")
+async def sim_tracker() -> dict[str, Any]:
+    from ploy_agent.sim import repo as sim_repo
+    from ploy_agent.sim.tracker import build_tracker_payload
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        run = await sim_repo.fetch_latest_forward_run(conn)
+        totals = None
+        recent: list[Any] = []
+        if run is not None:
+            rid = int(run["id"])
+            totals = await sim_repo.fetch_run_totals(conn, rid)
+            recent = await sim_repo.fetch_recent_trades_for_run(conn, rid, limit=20)
+
+    now = datetime.now(timezone.utc)
+    payload = build_tracker_payload(
+        run=dict(run) if run else None,
+        totals=dict(totals) if totals else None,
+        recent_rows=recent,
+        now=now,
+        sim_forward_run_hours=settings.sim_forward_run_hours,
+    )
+    return payload
+
+
+@app.get("/api/sim/runs")
+async def sim_runs_list(limit: int = 5) -> dict[str, Any]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, started_at, ended_at, mode, notes
+            FROM sim_runs
+            ORDER BY started_at DESC
+            LIMIT $1
+            """,
+            min(max(limit, 1), 20),
+        )
+        trade_counts = await conn.fetch(
+            """
+            SELECT sim_run_id, COUNT(*) AS n,
+                   COUNT(*) FILTER (WHERE status = 'closed') AS closed
+            FROM sim_trades
+            WHERE sim_run_id IS NOT NULL
+            GROUP BY sim_run_id
+            """
+        )
+    counts = {int(r["sim_run_id"]): {"n": int(r["n"]), "closed": int(r["closed"])} for r in trade_counts}
+    runs = []
+    for r in rows:
+        rid = int(r["id"])
+        c = counts.get(rid, {"n": 0, "closed": 0})
+        runs.append(
+            {
+                "id": rid,
+                "mode": str(r["mode"]),
+                "started_at": str(r["started_at"]),
+                "ended_at": str(r["ended_at"]) if r.get("ended_at") else None,
+                "notes": r.get("notes"),
+                "trade_count": c["n"],
+                "closed_count": c["closed"],
+            }
+        )
+    return {"runs": runs}
+
+
+@app.get("/api/top-picks")
+async def api_top_picks() -> dict[str, Any]:
+    """Live ranked edges (same logic as notifier ranking)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        picks = await top_picks(
+            conn,
+            limit=settings.rank_top_n,
+            strategy_ids=settings.strategy_ids(),
+            merge_by_market=settings.rank_merge_by_market,
+        )
+    return {"picks": _pick_dicts(picks), "rank_top_n": settings.rank_top_n}
+
+
+@app.get("/api/recommendations")
+async def api_recommendations() -> dict[str, Any]:
+    """Persisted recommendation rows (Slack/Telegram alerts)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.ts, r.market_id, r.strategy_id, r.score, r.status, r.payload_json,
+                   m.question, m.category
+            FROM recommendations r
+            JOIN markets m ON m.id = r.market_id
+            ORDER BY
+              CASE r.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+              r.score DESC NULLS LAST,
+              r.ts DESC
+            LIMIT 20
+            """
+        )
+    return {"recommendations": _recommendation_dicts([dict(r) for r in rows])}
 
 
 # ---------- SSE (Server-Sent Events) for real-time updates ----------

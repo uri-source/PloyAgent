@@ -9,7 +9,7 @@ from typing import Any
 import asyncpg
 
 from ploy_agent.common.config import settings
-from ploy_agent.common.scoring import edge_cents as calc_edge
+from ploy_agent.common.pnl import compute_pnl_cents, outcome_from_final_mid, trade_direction
 
 
 def _brier(p: float, y: float) -> float:
@@ -195,14 +195,9 @@ async def _fair_values_backtest(conn: asyncpg.Connection, min_edge: float) -> No
         kp = float(r["market_prob"])
         edge = float(r["edge_cents"])
 
-        # Simulate P&L: if abs(edge) >= min_edge, would have traded
         pnl = 0.0
         if abs(edge) >= min_edge:
-            is_buy = edge > 0
-            if is_buy:
-                pnl = ((1.0 - kp) * 100) if outcome == 1 else (-kp * 100)
-            else:
-                pnl = (kp * 100) if outcome == 0 else (-(1.0 - kp) * 100)
+            pnl = compute_pnl_cents(kp, trade_direction(edge), outcome)
 
         strats[r["strategy_id"] or "unknown"].append({
             "model_prob": mp,

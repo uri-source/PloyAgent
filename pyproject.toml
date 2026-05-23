@@ -34,6 +34,7 @@ ploy-notify = "ploy_agent.notifier.__main__:main"
 ploy-web = "ploy_agent.web.app:run"
 ploy-slack-events = "ploy_agent.notifier.slack_events:run"
 ploy-backtest = "ploy_agent.backtest.__main__:main"
+ploy-sim = "ploy_agent.sim.__main__:main"
 ploy-migrate = "ploy_agent.db.migrate:main"
 ploy-train-model = "ploy_agent.reasoning.train_model:main"
 

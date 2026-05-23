@@ -31,6 +31,14 @@ class Settings(BaseSettings):
         alias="POLY_NBA_TAGS",
         description="Deprecated alias for discovery tags when POLY_GAMMA_TAGS is unset",
     )
+    poly_gamma_event_slugs: str = Field(
+        default="",
+        alias="POLY_GAMMA_EVENT_SLUGS",
+        description=(
+            "Comma-separated Gamma event slugs to always ingest "
+            "(e.g. spacex-or-openai-higher-ipo-closing-market-cap)"
+        ),
+    )
 
     enrichment_espn_leagues: str = Field(
         default="nba",
@@ -96,6 +104,25 @@ class Settings(BaseSettings):
         description="Min composite score for alerts (0 = no filter)",
     )
 
+    sim_forward_interval_sec: float = Field(
+        default=5.0,
+        alias="SIM_FORWARD_INTERVAL_SEC",
+        description="ploy-sim forward loop interval (seconds)",
+    )
+    sim_forward_run_hours: float = Field(
+        default=336.0,
+        alias="SIM_FORWARD_RUN_HOURS",
+        description=(
+            "Forward paper-trading auto-stops after N hours (336 = 14 days). "
+            "0 = run until manual stop."
+        ),
+    )
+    sim_replay_days: int = Field(
+        default=14,
+        alias="SIM_REPLAY_DAYS",
+        description="Default lookback for ploy-sim replay when --from is omitted",
+    )
+
     web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8765, alias="WEB_PORT")
 
@@ -130,6 +157,9 @@ class Settings(BaseSettings):
         if g:
             return g
         return self.poly_nba_tags.strip() or "nba"
+
+    def discovery_event_slug_list(self) -> list[str]:
+        return [s.strip() for s in self.poly_gamma_event_slugs.split(",") if s.strip()]
 
     def enrichment_espn_league_keys(self) -> list[str]:
         keys = [x.strip().lower() for x in self.enrichment_espn_leagues.split(",") if x.strip()]

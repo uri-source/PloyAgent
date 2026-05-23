@@ -1,153 +1,231 @@
-# Private dashboard with Cloudflare
+# Private dashboard for friends (VPS + Cloudflare)
 
-Expose the FastAPI dashboard **only through Cloudflare** (HTTPS + login), while `ploy-web` stays on `127.0.0.1` on your Mac.
+Expose the dashboard at a public HTTPS URL **only for people you allow**, without opening the app or database to the whole internet.
 
-**I cannot log into your Cloudflare account or run `cloudflared tunnel login` for you.** Those steps open a browser on **your** machine. Use this doc as a checklist.
+**Security model:** [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) (outbound from your server) + [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) (email login). The PloyAgent UI has **no built-in password**.
 
-## Prerequisites
+---
 
-- A **Cloudflare account** (free tier is enough).
-- A **domain** whose DNS is managed by Cloudflare (nameservers point to Cloudflare).
-- **Cloudflare Zero Trust** enabled once (dashboard → Zero Trust → it may ask you to pick a team name).
-- On your Mac: `ploy-web` running and responding at `http://127.0.0.1:8765` (and `/healthz` returning `ok`).
+## What you need to sign up for (one-time)
 
-## Local app settings (important)
+| Service | Required? | What to do |
+|---------|-----------|------------|
+| **[Cloudflare](https://dash.cloudflare.com/sign-up)** | **Yes** | Free account. Add your domain and point its nameservers to Cloudflare. |
+| **[Cloudflare Zero Trust](https://one.dash.cloudflare.com/)** | **Yes** | Open Zero Trust once; pick a team name (free). Used for Access policies. |
+| **VPS provider** | **Yes** | e.g. Hetzner, DigitalOcean, Linode, GCP. ~2 vCPU / 4GB RAM. Prefer **non-US** region if Polymarket blocks US egress (see `infra/README.md`). |
+| **Domain name** | **Yes** | Can be cheap; must use Cloudflare DNS for tunnel + Access. |
 
-In `.env`:
+You do **not** need a separate “hosting” product beyond the VPS. Friends only need the URL you send them.
 
-```env
-WEB_HOST=127.0.0.1
-WEB_PORT=8765
+**I cannot create these accounts for you.** Steps that open a browser (`cloudflared tunnel login`, Access policies) must be done on your side.
+
+---
+
+## Architecture
+
+```text
+Friend → https://dashboard.yourdomain.com
+         → Cloudflare Access (email allowlist)
+         → cloudflared tunnel (on VPS)
+         → http://127.0.0.1:8765 (ploy-web, not public on firewall)
 ```
 
-Do **not** set `WEB_HOST=0.0.0.0` for this setup. The tunnel connects to localhost from your machine.
+Postgres and other services stay on the Docker network; **no** public port `5433` or `8765` on the VPS firewall.
 
-## Step-by-step checklist
+---
 
-### 1. Install cloudflared (macOS)
+## Part A — Deploy PloyAgent on the VPS
+
+### 1. Server prep (Ubuntu)
 
 ```bash
-brew install cloudflared
+# SSH into the VPS
+sudo apt update && sudo apt install -y git curl
+
+# Install Docker: https://docs.docker.com/engine/install/ubuntu/
+# Optional firewall — allow SSH only:
+sudo ufw allow OpenSSH
+sudo ufw enable
+```
+
+### 2. Clone and configure
+
+```bash
+git clone https://github.com/YOUR_ORG/PloyAgent.git
+cd PloyAgent
+cp .env.production.example .env
+nano .env   # set POSTGRES_PASSWORD, DATABASE_URL (same password), ANTHROPIC_API_KEY, etc.
+```
+
+Generate a password:
+
+```bash
+openssl rand -hex 24
+```
+
+### 3. Start the stack (production compose)
+
+```bash
+chmod +x scripts/vps-deploy.sh
+./scripts/vps-deploy.sh
+```
+
+This runs:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+[`docker-compose.prod.yml`](../docker-compose.prod.yml) binds `web` to `127.0.0.1:8765` and removes public TimescaleDB port mapping.
+
+Verify on the VPS:
+
+```bash
+curl -s http://127.0.0.1:8765/healthz
+# {"status":"ok"}
+```
+
+### 4. Optional: simulation data
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm web ploy-sim init-profiles
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm web ploy-sim replay --days 14
+```
+
+---
+
+## Part B — Cloudflare Tunnel on the VPS
+
+### 1. Install cloudflared
+
+```bash
+# Ubuntu/Debian
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+sudo dpkg -i /tmp/cloudflared.deb
 cloudflared --version
 ```
 
-### 2. Log in to Cloudflare (browser)
+### 2. Log in (browser)
 
 ```bash
 cloudflared tunnel login
 ```
 
-Choose the account that owns your domain and authorize. This writes a cert under `~/.cloudflared/`.
+Authorize the zone that contains your domain. Cert is saved under `~/.cloudflared/`.
 
-### 3. Create a named tunnel
+### 3. Create tunnel
 
 ```bash
 cloudflared tunnel create ployagent-dashboard
 ```
 
-Note the printed **Tunnel ID** (UUID). A credentials file is created, for example:
+Save the **Tunnel ID** and credentials path (`~/.cloudflared/<UUID>.json`).
 
-`~/.cloudflared/<TUNNEL_UUID>.json`
+### 4. Config file
 
-### 4. Create `~/.cloudflared/config.yml`
+Copy [`infra/cloudflared/config.example.yml`](../infra/cloudflared/config.example.yml) to `~/.cloudflared/config.yml` and edit hostnames.
 
-Replace placeholders with your real values:
-
-```yaml
-# Tunnel ID from: cloudflared tunnel create ployagent-dashboard
-tunnel: <TUNNEL_UUID>
-credentials-file: /Users/YOUR_USERNAME/.cloudflared/<TUNNEL_UUID>.json
-
-ingress:
-  - hostname: dashboard.yourdomain.com
-    service: http://127.0.0.1:8765
-  - service: http_status:404
-```
-
-- Use a **subdomain** you like (`dashboard`, `ploy`, etc.).
-- The **catch-all** `http_status:404` rule at the end is required.
-
-### 5. Route DNS to the tunnel
+### 5. DNS route
 
 ```bash
 cloudflared tunnel route dns ployagent-dashboard dashboard.yourdomain.com
 ```
 
-In the Cloudflare dashboard you should see a **CNAME** for that hostname pointing at `<uuid>.cfargotunnel.com`.
-
-### 6. Run the tunnel (manual test)
+### 6. Run tunnel (test)
 
 ```bash
 cloudflared tunnel run ployagent-dashboard
 ```
 
-Leave this running. In another terminal:
+From your laptop:
 
 ```bash
 curl -sS https://dashboard.yourdomain.com/healthz
 ```
 
-Expect: `{"status":"ok"}` (or similar JSON from your app).
-
-### 7. Lock down with Cloudflare Access (Zero Trust)
-
-1. Open [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access** → **Applications**.
-2. **Add an application** → **Self-hosted**.
-3. **Application domain**: `dashboard.yourdomain.com` (same as in `config.yml`).
-4. **Policy**: add a rule such as **Emails** → list your email and your friends’ emails (or use a Google workspace group, etc.).
-5. Save.
-
-Now opening `https://dashboard.yourdomain.com` should show a Cloudflare login **before** the PloyAgent page.
-
-### 8. Optional: run the tunnel as a service (Mac)
-
-After `config.yml` works:
+### 7. Run tunnel as a service (survives reboot)
 
 ```bash
 sudo cloudflared service install
-sudo launchctl start com.cloudflare.cloudflared
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
 ```
 
-Exact service name can vary; if unsure, keep using `cloudflared tunnel run ployagent-dashboard` in a terminal or use a process manager.
+---
 
-## Slack interactivity (optional)
+## Part C — Friends-only access (Cloudflare Access)
 
-If you use **Approve/Reject** in Slack, Slack must reach `ploy-slack-events` at **port 8766**. That URL is **not** the same as the dashboard tunnel unless you add it.
+1. Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access** → **Applications**.
+2. **Add application** → **Self-hosted**.
+3. **Application domain:** `dashboard.yourdomain.com` (must match tunnel hostname).
+4. **Add a policy** → **Include** → **Emails** → add your email and each friend’s email.
+5. Save.
 
-Options:
-
-1. **Separate tunnel hostname** in the same `config.yml` (second `ingress` rule) pointing at `http://127.0.0.1:8766`, then put **that** HTTPS URL in Slack → Interactivity Request URL, **or**
-2. Use **ngrok**/another tunnel only for port 8766, **or**
-3. Run `ploy-slack-events` on a host that already has a public URL.
-
-Do not paste a raw `http://127.0.0.1:8766` URL into Slack; Slack’s servers cannot reach your laptop.
-
-## What your friends use
+**Share with friends:**
 
 ```text
 https://dashboard.yourdomain.com
 ```
 
-They sign in via Access; only allowed emails can see the dashboard.
+They log in with an **allowed email** (one-time code or Google, depending on your Access settings).
 
-## What to keep running locally
+Optional: enable **MFA** for your own email in the same policy.
 
-- `ploy-web`
-- `cloudflared tunnel run ployagent-dashboard` (or the system service)
-- `ploy-ingest`, `ploy-enrich`, `ploy-reason` (so data stays fresh)
-- `ploy-notify` / `ploy-slack-events` as needed
+---
+
+## Part D — Slack buttons (optional)
+
+If you use Approve/Reject in Slack, add a second ingress host in `config.yml`:
+
+```yaml
+  - hostname: slack.yourdomain.com
+    service: http://127.0.0.1:8766
+```
+
+Set Slack **Interactivity Request URL** to:
+
+```text
+https://slack.yourdomain.com/slack/interactions
+```
+
+[`docker-compose.prod.yml`](../docker-compose.prod.yml) already binds `8766` to localhost only.
+
+---
+
+## Mac-only setup (local tunnel)
+
+If the agent runs on your Mac instead of a VPS, use the same Tunnel + Access steps but point `service: http://127.0.0.1:8765` at your Mac and keep `WEB_HOST=127.0.0.1` in `.env`. Run `cloudflared` on the Mac.
+
+---
 
 ## Troubleshooting
 
 | Symptom | What to check |
 |--------|----------------|
-| `502` or connection error | Is `ploy-web` up? `curl http://127.0.0.1:8765/healthz` |
-| Tunnel errors on start | `config.yml` tunnel ID and `credentials-file` path must match the JSON file |
-| DNS not resolving | Wait a few minutes; confirm CNAME in Cloudflare DNS |
-| Page loads but no Access login | Access app domain must match hostname; policy must include the visitor’s email |
-| Wrong site / 404 | Last `ingress` rule must be `http_status:404` |
+| `502` / bad gateway | On VPS: `curl http://127.0.0.1:8765/healthz`; `docker compose ... ps` |
+| Tunnel won’t start | `config.yml` tunnel ID + `credentials-file` path |
+| No Access login | Access application domain must match URL hostname |
+| Friend can’t log in | Their exact email must be in the Access policy |
+| Empty dashboard | `ploy-ingest`, `ploy-enrich`, `ploy-reason` running; check logs |
+| DB connection errors | `POSTGRES_PASSWORD` in `.env` matches `DATABASE_URL` |
 
-## Notes
+---
 
-- The dashboard has **no built-in login**. Cloudflare Access is the security boundary.
-- Keeping `WEB_HOST=127.0.0.1` avoids exposing the app on your LAN unnecessarily.
+## Checklist before sharing the link
+
+- [ ] Cloudflare account + domain on Cloudflare DNS
+- [ ] Zero Trust Access app + friend emails added
+- [ ] VPS firewall: **no** public 8765 / 5433
+- [ ] `POSTGRES_PASSWORD` changed from default
+- [ ] `curl http://127.0.0.1:8765/healthz` on VPS
+- [ ] `https://dashboard.yourdomain.com` works after Access login in incognito
+
+---
+
+## What stays private
+
+- `.env`, API keys, SSH keys
+- Direct database access
+- Anyone not on the Access email list

@@ -112,6 +112,18 @@ An "edge" of 6.5 cents means the model thinks the market is mispriced by 6.5 per
 
 See [infra/README.md](infra/README.md) for hosting, geo-restrictions, and GCP notes.
 
+### Share the dashboard with friends (private HTTPS)
+
+Deploy on a VPS with production Docker settings, then expose **only** via [Cloudflare Tunnel + Access](docs/cloudflare-private-dashboard.md) (email allowlist — no public port 8765).
+
+```bash
+cp .env.production.example .env   # on the VPS — set POSTGRES_PASSWORD
+./scripts/vps-deploy.sh
+# Then: cloudflared tunnel + Zero Trust Access (see doc)
+```
+
+**You need to sign up for:** Cloudflare (free), a domain on Cloudflare DNS, and a VPS. Step-by-step checklist: [docs/cloudflare-private-dashboard.md](docs/cloudflare-private-dashboard.md).
+
 ### macOS / Python TLS errors (`CERTIFICATE_VERIFY_FAILED`)
 
 The app uses **`truststore`** (OS Keychain) plus **`certifi`**. If HTTPS/WebSocket still fails:

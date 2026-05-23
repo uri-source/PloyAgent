@@ -12,7 +12,7 @@ from ploy_agent.common.ssl_utils import httpx_verify
 from ploy_agent.ingestion import repo
 from ploy_agent.ingestion.book_math import best_bid_ask_from_book, mid_from_ba
 from ploy_agent.ingestion.clob import reconcile_book
-from ploy_agent.ingestion.gamma import discover_markets_by_tags, normalize_market_row
+from ploy_agent.ingestion.gamma import discover_markets, normalize_market_row
 from ploy_agent.ingestion.links import rebuild_market_links
 
 from .ws_market import run_market_ws
@@ -21,7 +21,7 @@ log = get_logger("ingestion")
 
 
 async def _discover_and_upsert(client: httpx.AsyncClient, pool: Any) -> None:
-    bundles = await discover_markets_by_tags(client)
+    bundles = await discover_markets(client)
     async with pool.acquire() as conn:
         for b in bundles:
             row = normalize_market_row(b)

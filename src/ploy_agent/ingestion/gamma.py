@@ -28,6 +28,58 @@ async def fetch_sports_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+async def discover_markets_by_event_slugs(
+    client: httpx.AsyncClient, slugs: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Pull active markets for explicit Gamma event slugs (IPO, politics, etc.)."""
+    base = settings.gamma_base_url.rstrip("/")
+    slug_list = slugs if slugs is not None else settings.discovery_event_slug_list()
+    markets_out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for slug in slug_list:
+        r = await client.get(
+            f"{base}/events",
+            params={"slug": slug, "active": "true"},
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        events = r.json()
+        if not isinstance(events, list):
+            continue
+        for ev in events:
+            for m in ev.get("markets") or []:
+                mid = str(m.get("id") or "")
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                markets_out.append({"event": ev, "market": m})
+    return markets_out
+
+
+def merge_market_bundles(
+    *bundle_lists: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deduplicate discovery results by Polymarket market id."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bundles in bundle_lists:
+        for b in bundles:
+            mid = str((b.get("market") or {}).get("id") or "")
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            out.append(b)
+    return out
+
+
+async def discover_markets(client: httpx.AsyncClient) -> list[dict[str, Any]]:
+    """Tag-based discovery plus any pinned event slugs."""
+    by_tags = await discover_markets_by_tags(client)
+    by_slugs = await discover_markets_by_event_slugs(client)
+    return merge_market_bundles(by_tags, by_slugs)
+
+
 async def discover_markets_by_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     """
     Pull active markets from Gamma for each configured tag.

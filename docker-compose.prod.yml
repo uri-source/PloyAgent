@@ -1,0 +1,50 @@
+# Production overlay: use with
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Requires in .env:
+#   POSTGRES_PASSWORD=<strong secret>
+#   DATABASE_URL=postgresql://postgres:<same>@timescaledb:5432/ploy_agent
+#
+# Binds dashboard and Slack events to localhost only — expose via Cloudflare Tunnel.
+
+x-database-url: &database_url
+  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@timescaledb:5432/ploy_agent
+
+services:
+  timescaledb:
+    ports: []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  migrate:
+    environment:
+      <<: *database_url
+
+  ingest:
+    environment:
+      <<: *database_url
+
+  enrich:
+    environment:
+      <<: *database_url
+
+  reason:
+    environment:
+      <<: *database_url
+
+  notify:
+    environment:
+      <<: *database_url
+
+  web:
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      <<: *database_url
+      WEB_HOST: "127.0.0.1"
+
+  slack-events:
+    ports:
+      - "127.0.0.1:8766:8766"
+    environment:
+      <<: *database_url

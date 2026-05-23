@@ -7,6 +7,7 @@ import signal
 import httpx
 
 from ploy_agent.common.adaptive_edge import adaptive_min_edge
+from ploy_agent.common.pnl import compute_pnl_cents, outcome_from_final_mid
 from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
 from ploy_agent.common.logging_config import configure_logging, get_logger
@@ -78,7 +79,7 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
                 payload = json.loads(payload)
 
             edge_cents = float(payload.get("edge_cents", 0))
-            market_prob = float(payload.get("market_prob", 0.5)
+            market_prob = float(payload.get("market_prob", 0.5))
 
             is_buy = edge_cents > 0
             entry_price = market_prob
@@ -95,19 +96,12 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
             if final_price is None:
                 continue
 
-            if final_price > 0.9:
-                outcome = 1
-            elif final_price < 0.1:
-                outcome = 0
-            else:
+            outcome = outcome_from_final_mid(float(final_price))
+            if outcome is None:
                 continue
 
-            if is_buy:
-                pnl = ((1.0 - entry_price) * 100.0) if outcome == 1 else (-entry_price * 100.0)
-            else:
-                pnl = (entry_price * 100.0) if outcome == 0 else (-(1.0 - entry_price) * 100.0)
-
             edge_dir = "buy" if is_buy else "sell"
+            pnl = compute_pnl_cents(entry_price, edge_dir, outcome)
 
             await conn.execute(
                 """
