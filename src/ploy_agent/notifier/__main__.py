@@ -9,14 +9,21 @@ import httpx
 from ploy_agent.common.adaptive_edge import adaptive_min_edge
 from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
-from ploy_agent.common.kelly import kelly_display
 from ploy_agent.common.logging_config import configure_logging, get_logger
 from ploy_agent.notifier import repo as rec_repo
 from ploy_agent.notifier.rank import RankedPick, top_picks
-from ploy_agent.notifier.slack import post_picks as slack_post_picks, reply_resolution
+from ploy_agent.notifier.slack import (
+    SlackFeedEntry,
+    reply_resolution,
+    upsert_live_feed,
+)
 from ploy_agent.notifier.telegram import post_picks as tg_post_picks
 
 log = get_logger("notifier")
+
+
+def _pick_key(pick: RankedPick) -> tuple[str, str | None]:
+    return pick.market_id, pick.strategy_id or None
 
 
 async def _recently_notified_edges(
@@ -71,13 +78,11 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
                 payload = json.loads(payload)
 
             edge_cents = float(payload.get("edge_cents", 0))
-            market_prob = float(payload.get("market_prob", 0.5))
+            market_prob = float(payload.get("market_prob", 0.5)
 
-            # BUY if edge > 0 (model thinks YES is underpriced), SELL if edge < 0
             is_buy = edge_cents > 0
             entry_price = market_prob
 
-            # Check final price to determine resolution
             final_price = await conn.fetchval(
                 """
                 SELECT mid FROM prices
@@ -90,15 +95,13 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
             if final_price is None:
                 continue
 
-            # Determine outcome: final price > 0.9 → YES; < 0.1 → NO
             if final_price > 0.9:
                 outcome = 1
             elif final_price < 0.1:
                 outcome = 0
             else:
-                continue  # Ambiguous — skip
+                continue
 
-            # Calculate P&L in cents
             if is_buy:
                 pnl = ((1.0 - entry_price) * 100.0) if outcome == 1 else (-entry_price * 100.0)
             else:
@@ -127,15 +130,18 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
                 direction=edge_dir,
             )
 
-            # Post thread reply to original Slack alert
             slack_ch = row.get("slack_channel")
             slack_ts = row.get("slack_ts")
             if slack_ch and slack_ts and settings.slack_bot_token:
                 try:
                     await reply_resolution(
-                        http, slack_ch, slack_ts,
-                        rec_id=rec_id, outcome=outcome,
-                        pnl_cents=pnl, edge_direction=edge_dir,
+                        http,
+                        slack_ch,
+                        slack_ts,
+                        rec_id=rec_id,
+                        outcome=outcome,
+                        pnl_cents=pnl,
+                        edge_direction=edge_dir,
                     )
                 except Exception as e:
                     log.warning("slack_reply_failed", rec_id=rec_id, error=str(e))
@@ -151,17 +157,23 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
         )
     if not picks:
         log.info("no_picks")
+        if settings.slack_bot_token and settings.slack_channel:
+            async with pool.acquire() as conn:
+                existing_ref = await rec_repo.latest_slack_message_ref(
+                    conn, settings.slack_channel
+                )
+            if existing_ref:
+                await upsert_live_feed(http, [], existing_ref=existing_ref)
         return
 
     prev_edges = await _recently_notified_edges(pool, [p.market_id for p in picks])
-    # Smart dedup: skip if recently notified UNLESS edge has doubled (significant move)
     deduped: list[RankedPick] = []
     for p in picks:
         prev = prev_edges.get(p.market_id)
         if prev is None:
-            deduped.append(p)  # Not recently notified
+            deduped.append(p)
         elif abs(p.edge_cents) >= prev * 2.0 and abs(p.edge_cents) >= settings.min_edge_cents * 2:
-            deduped.append(p)  # Edge doubled — re-alert
+            deduped.append(p)
             log.info(
                 "re_alert_edge_doubled",
                 market_id=p.market_id,
@@ -170,7 +182,6 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
             )
     picks = deduped[: settings.rank_top_n]
 
-    # Alert filters — adaptive edge + configured thresholds
     async with pool.acquire() as conn:
         adaptive_edge = await adaptive_min_edge(conn)
     min_e = settings.alert_min_edge or adaptive_edge
@@ -179,50 +190,74 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
     if min_e > 0 or min_d > 0 or min_s > 0:
         before = len(picks)
         picks = [
-            p for p in picks
-            if abs(p.edge_cents) >= min_e
-            and p.depth_1c >= min_d
-            and p.score >= min_s
+            p
+            for p in picks
+            if abs(p.edge_cents) >= min_e and p.depth_1c >= min_d and p.score >= min_s
         ]
         dropped = before - len(picks)
         if dropped:
-            log.info("alert_filter_dropped", dropped=dropped, min_edge=min_e, min_depth=min_d, min_score=min_s)
+            log.info(
+                "alert_filter_dropped",
+                dropped=dropped,
+                min_edge=min_e,
+                min_depth=min_d,
+                min_score=min_s,
+            )
 
     if not picks:
         log.info("no_new_picks")
         return
 
-    pick_ids: list[tuple[RankedPick, int]] = []
     async with pool.acquire() as conn:
+        existing_ref = None
+        if settings.slack_bot_token and settings.slack_channel:
+            existing_ref = await rec_repo.latest_slack_message_ref(conn, settings.slack_channel)
+        recent_refs = await rec_repo.recent_recommendation_refs(
+            conn, [p.market_id for p in picks]
+        )
+        feed_entries: list[SlackFeedEntry] = []
+        pick_ids: list[tuple[RankedPick, int]] = []
+        created = 0
         for p in picks:
-            payload = {
-                "strategy_id": p.strategy_id,
-                "edge_cents": p.edge_cents,
-                "model_prob": p.model_prob,
-                "market_prob": p.market_prob,
-                "confidence": p.confidence,
-                "reasoning": p.reasoning,
-            }
-            rec_id = await rec_repo.insert_recommendation(
-                conn,
-                market_id=p.market_id,
-                score=p.score,
-                payload=payload,
-                strategy_id=p.strategy_id,
-            )
-            pick_ids.append((p, rec_id))
-    log.info("recommendations_persisted", n=len(pick_ids))
+            ref = recent_refs.get(_pick_key(p))
+            if ref is None:
+                payload = {
+                    "strategy_id": p.strategy_id,
+                    "edge_cents": p.edge_cents,
+                    "model_prob": p.model_prob,
+                    "market_prob": p.market_prob,
+                    "confidence": p.confidence,
+                    "reasoning": p.reasoning,
+                }
+                rec_id = await rec_repo.insert_recommendation(
+                    conn,
+                    market_id=p.market_id,
+                    score=p.score,
+                    payload=payload,
+                    strategy_id=p.strategy_id,
+                )
+                created += 1
+                feed_entries.append(SlackFeedEntry(pick=p, rec_id=rec_id))
+            else:
+                feed_entries.append(
+                    SlackFeedEntry(pick=p, rec_id=ref.rec_id, status=ref.status)
+                )
+            pick_ids.append((p, feed_entries[-1].rec_id))
 
-    # Post to Slack
+    if created:
+        log.info("recommendations_persisted", n=created)
+    else:
+        log.info("recommendations_refreshed", n=len(feed_entries))
+
     if settings.slack_bot_token and settings.slack_channel:
-        refs = await slack_post_picks(http, pick_ids)
-        if refs:
+        ref = await upsert_live_feed(http, feed_entries, existing_ref=existing_ref)
+        if ref:
+            channel, ts = ref
             async with pool.acquire() as conn:
-                for rec_id, channel, ts in refs:
-                    await rec_repo.update_slack_refs(conn, rec_id, channel, ts)
+                for entry in feed_entries:
+                    await rec_repo.update_slack_refs(conn, entry.rec_id, channel, ts)
 
-    # Post to Telegram
-    if settings.telegram_bot_token and settings.telegram_chat_id:
+    if settings.telegram_bot_token and settings.telegram_chat_id and pick_ids:
         tg_refs = await tg_post_picks(http, pick_ids)
         if tg_refs:
             async with pool.acquire() as conn:

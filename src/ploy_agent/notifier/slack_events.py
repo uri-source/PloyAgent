@@ -72,7 +72,15 @@ async def slack_interactions(payload: str = Form(...)) -> JSONResponse:
         ts = data.get("message", {}).get("ts") or data.get("container", {}).get("message_ts", "")
 
         if channel and ts:
-            await slack_update(app.state.http, channel, ts, rec_id, status, user)
+            await slack_update(
+                app.state.http,
+                channel,
+                ts,
+                rec_id,
+                status,
+                user,
+                blocks=data.get("message", {}).get("blocks"),
+            )
 
         log.info("recommendation_actioned", rec_id=rec_id, status=status, user=user, source="slack")
 

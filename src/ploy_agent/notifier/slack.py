@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -22,7 +24,43 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _pick_block(pick: RankedPick, rec_id: int) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class SlackFeedEntry:
+    pick: RankedPick
+    rec_id: int
+    status: str = "pending"
+
+
+def _status_block(status: str, user: str | None = None) -> dict[str, Any]:
+    status_norm = status.strip().lower()
+    if status_norm == "approved":
+        emoji, label = ":white_check_mark:", "Approved"
+    elif status_norm == "rejected":
+        emoji, label = ":x:", "Rejected"
+    else:
+        emoji, label = ":hourglass_flowing_sand:", status_norm.title() or "Pending"
+    by = f" by <@{user}>" if user else ""
+    return {
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"{emoji} *Status:* {label}{by}"},
+        ],
+    }
+
+
+def _summary_text(entries: list[SlackFeedEntry]) -> str:
+    now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    if not entries:
+        return f":satellite: *Polyagent live feed* · no ranked edges right now · updated {now}"
+    pending = sum(1 for e in entries if e.status == "pending")
+    return (
+        f":chart_with_upwards_trend: *Polyagent live feed* · "
+        f"{len(entries)} tracked · {pending} pending · updated {now}"
+    )
+
+
+def _pick_block(entry: SlackFeedEntry) -> list[dict[str, Any]]:
+    pick = entry.pick
     edge_dir = "BUY" if pick.edge_cents > 0 else "SELL"
     edge_abs = abs(pick.edge_cents)
     q = pick.question or pick.market_id
@@ -58,71 +96,131 @@ def _pick_block(pick: RankedPick, rec_id: int) -> list[dict[str, Any]]:
         },
     }
 
-    actions = {
-        "type": "actions",
-        "elements": [
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Approve"},
-                "style": "primary",
-                "action_id": "rec_approve",
-                "value": str(rec_id),
-            },
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Reject"},
-                "style": "danger",
-                "action_id": "rec_reject",
-                "value": str(rec_id),
-            },
-        ],
-    }
+    if entry.status == "pending":
+        action_or_status = {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "action_id": "rec_approve",
+                    "value": str(entry.rec_id),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject"},
+                    "style": "danger",
+                    "action_id": "rec_reject",
+                    "value": str(entry.rec_id),
+                },
+            ],
+        }
+    else:
+        action_or_status = _status_block(entry.status)
 
     divider = {"type": "divider"}
 
-    return [header, detail_section, reasoning_section, actions, divider]
+    return [header, detail_section, reasoning_section, action_or_status, divider]
 
 
-def build_message_blocks(picks: list[tuple[RankedPick, int]]) -> list[dict[str, Any]]:
+def build_message_blocks(entries: list[SlackFeedEntry]) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":chart_with_upwards_trend: *Top {len(picks)} Polymarket Edges*",
+                "text": _summary_text(entries),
             },
         },
         {"type": "divider"},
     ]
-    for pick, rec_id in picks:
-        blocks.extend(_pick_block(pick, rec_id))
+    if not entries:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "_No ranked edges right now. Feed will refresh automatically when new picks appear._",
+                },
+            }
+        )
+        return blocks
+    for entry in entries:
+        blocks.extend(_pick_block(entry))
     return blocks
 
 
-async def post_picks(
+async def upsert_live_feed(
     client: httpx.AsyncClient,
-    picks: list[tuple[RankedPick, int]],
-) -> list[tuple[int, str, str]]:
+    entries: list[SlackFeedEntry],
+    *,
+    existing_ref: tuple[str, str] | None = None,
+) -> tuple[str, str] | None:
     if not settings.slack_bot_token or not settings.slack_channel:
         log.warning("slack_not_configured")
-        return []
+        return None
 
-    blocks = build_message_blocks(picks)
-    payload = {
-        "channel": settings.slack_channel,
-        "text": f"Top {len(picks)} Polymarket edges",
-        "blocks": blocks,
-    }
-    r = await client.post(_SLACK_POST_URL, headers=_headers(), json=payload, timeout=15.0)
+    blocks = build_message_blocks(entries)
+    text = "Polyagent live feed"
+    if existing_ref is None:
+        payload = {
+            "channel": settings.slack_channel,
+            "text": text,
+            "blocks": blocks,
+        }
+        url = _SLACK_POST_URL
+    else:
+        channel, ts = existing_ref
+        payload = {
+            "channel": channel,
+            "ts": ts,
+            "text": text,
+            "blocks": blocks,
+        }
+        url = _SLACK_UPDATE_URL
+    r = await client.post(url, headers=_headers(), json=payload, timeout=15.0)
     data = r.json()
     if not data.get("ok"):
-        log.warning("slack_post_failed", error=data.get("error"))
-        return []
+        log.warning("slack_feed_upsert_failed", error=data.get("error"))
+        return None
 
-    channel = data["channel"]
-    ts = data["ts"]
-    log.info("slack_posted", channel=channel, ts=ts, n=len(picks))
-    return [(rec_id, channel, ts) for _, rec_id in picks]
+    channel = str(data["channel"])
+    ts = str(data["ts"])
+    log.info("slack_feed_upserted", channel=channel, ts=ts, n=len(entries))
+    return channel, ts
+
+
+def replace_action_block_with_status(
+    blocks: list[dict[str, Any]] | None,
+    rec_id: int,
+    status: str,
+    user: str,
+) -> list[dict[str, Any]]:
+    if not blocks:
+        return [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Recommendation #{rec_id}* was *{status}* by <@{user}>",
+                },
+            }
+        ]
+    out: list[dict[str, Any]] = []
+    target = str(rec_id)
+    replaced = False
+    for block in blocks:
+        if not replaced and block.get("type") == "actions":
+            elements = block.get("elements") or []
+            if any(str(el.get("value") or "") == target for el in elements if isinstance(el, dict)):
+                out.append(_status_block(status, user))
+                replaced = True
+                continue
+        out.append(block)
+    if not replaced:
+        out.append(_status_block(status, user))
+    return out
 
 
 async def update_message_status(
@@ -132,21 +230,16 @@ async def update_message_status(
     rec_id: int,
     status: str,
     user: str,
+    *,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> None:
     emoji = ":white_check_mark:" if status == "approved" else ":x:"
+    updated_blocks = replace_action_block_with_status(blocks, rec_id, status, user)
     payload = {
         "channel": channel,
         "ts": ts,
         "text": f"{emoji} Recommendation #{rec_id} {status} by <@{user}>",
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"{emoji} Recommendation *#{rec_id}* was *{status}* by <@{user}>",
-                },
-            },
-        ],
+        "blocks": updated_blocks,
     }
     r = await client.post(_SLACK_UPDATE_URL, headers=_headers(), json=payload, timeout=10.0)
     data = r.json()

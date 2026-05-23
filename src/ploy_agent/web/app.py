@@ -25,23 +25,6 @@ _GAME_STATE_FRESH_SEC = 180.0
 _FAIR_FRESH_SEC = 120.0
 
 
-def _tail_agent_log(max_lines: int = 120, max_bytes: int = 96_000) -> list[str]:
-    path = Path(settings.agent_log_file)
-    if not path.is_file():
-        return []
-    try:
-        size = path.stat().st_size
-        read_n = min(max_bytes, max(size, 0))
-        with path.open("rb") as f:
-            if size > read_n:
-                f.seek(size - read_n)
-            raw = f.read().decode("utf-8", errors="replace")
-        lines = raw.splitlines()
-        return lines[-max_lines:] if len(lines) > max_lines else lines
-    except OSError:
-        return []
-
-
 async def _pipeline_status(
     conn: Any,
     *,
@@ -286,9 +269,6 @@ async def dashboard(request: Request) -> Any:
             n_fair=stats["fair_values"],
         )
 
-    log_lines = _tail_agent_log()
-    log_path_display = str(Path(settings.agent_log_file))
-
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -300,8 +280,6 @@ async def dashboard(request: Request) -> Any:
             "game_rows": [dict(r) for r in game_rows],
             "price_ticks": [dict(r) for r in price_ticks],
             "pipeline_status": pipeline_status,
-            "log_lines": log_lines,
-            "log_path_display": log_path_display,
             "refresh_sec": 30,
         },
     )

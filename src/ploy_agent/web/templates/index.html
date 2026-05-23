@@ -126,22 +126,6 @@
     .status-unknown .status-dot { background: var(--muted); }
     .status-label { font-weight: 600; font-size: 0.88rem; }
     .status-detail { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
-    .log-panel {
-      background: #0a0e14;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.65rem 0.75rem;
-      max-height: 320px;
-      overflow: auto;
-    }
-    .log-panel pre {
-      margin: 0;
-      font-size: 0.72rem;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-word;
-      color: #b8c5d6;
-    }
     .log-meta { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; }
   </style>
 </head>
@@ -159,19 +143,6 @@
         <div class="status-detail">{{ s.detail }}</div>
       </div>
       {% endfor %}
-    </div>
-  </section>
-
-  <section>
-    <h2>Service log (tail)</h2>
-    <p class="log-meta">Shared file <span class="mono">{{ log_path_display }}</span> — filled when workers run with default logging (ingest, enrich, reason, notify).</p>
-    <div class="log-panel">
-      {% if log_lines %}
-      <pre>{% for line in log_lines %}{{ line }}
-{% endfor %}</pre>
-      {% else %}
-      <pre class="empty">No log file yet. Start <span class="mono">ploy-ingest</span> / <span class="mono">ploy-enrich</span> from the project directory so lines append here, or set <span class="mono">AGENT_LOG_FILE</span>.</pre>
-      {% endif %}
     </div>
   </section>
 

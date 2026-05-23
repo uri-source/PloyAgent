@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,16 @@ import asyncpg
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class RecommendationRef:
+    rec_id: int
+    market_id: str
+    strategy_id: str | None
+    status: str
+    slack_channel: str | None
+    slack_ts: str | None
 
 
 async def insert_recommendation(
@@ -66,3 +77,57 @@ async def set_status(conn: asyncpg.Connection, rec_id: int, status: str, notes: 
         status,
         notes,
     )
+
+
+async def latest_slack_message_ref(
+    conn: asyncpg.Connection, channel: str
+) -> tuple[str, str] | None:
+    row = await conn.fetchrow(
+        """
+        SELECT slack_channel, slack_ts
+        FROM recommendations
+        WHERE slack_channel = $1
+          AND slack_ts IS NOT NULL
+          AND slack_ts <> ''
+        ORDER BY ts DESC
+        LIMIT 1
+        """,
+        channel,
+    )
+    if not row:
+        return None
+    return str(row["slack_channel"]), str(row["slack_ts"])
+
+
+async def recent_recommendation_refs(
+    conn: asyncpg.Connection,
+    market_ids: list[str],
+    *,
+    window_minutes: int = 15,
+) -> dict[tuple[str, str | None], RecommendationRef]:
+    if not market_ids:
+        return {}
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
+          id, market_id, strategy_id, status, slack_channel, slack_ts
+        FROM recommendations
+        WHERE market_id = ANY($1::text[])
+          AND ts > NOW() - ($2::text || ' minutes')::interval
+        ORDER BY market_id, COALESCE(strategy_id, ''), ts DESC
+        """,
+        market_ids,
+        str(window_minutes),
+    )
+    out: dict[tuple[str, str | None], RecommendationRef] = {}
+    for row in rows:
+        key = (str(row["market_id"]), str(row["strategy_id"]) if row["strategy_id"] else None)
+        out[key] = RecommendationRef(
+            rec_id=int(row["id"]),
+            market_id=str(row["market_id"]),
+            strategy_id=str(row["strategy_id"]) if row["strategy_id"] else None,
+            status=str(row["status"]),
+            slack_channel=str(row["slack_channel"]) if row["slack_channel"] else None,
+            slack_ts=str(row["slack_ts"]) if row["slack_ts"] else None,
+        )
+    return out
