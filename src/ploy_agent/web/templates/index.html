@@ -326,9 +326,8 @@
     <summary>Simulation (paper trading)</summary>
     <div class="details-body">
       <p class="section-lead" style="margin-top:0">
-        Threshold profiles from <span class="mono">ploy-sim init-profiles</span>.
-        Run <span class="mono">ploy-sim replay</span> or <span class="mono">ploy-sim forward</span> to populate
-        <span class="mono">sim_trades</span>.
+        Paper trades from the <strong>current forward run</strong> only (<span class="mono">ploy-sim forward</span>).
+        Historical replay data is hidden unless you toggle below.
       </p>
       <div id="sim-tracker" class="sim-tracker" style="margin-bottom:0.75rem">
         <p class="empty">Loading simulation tracker…</p>
@@ -352,13 +351,16 @@
         <div class="metric"><div class="k">Sharpe-like</div><div class="v" id="sim-sharpe">—</div></div>
       </div>
       <canvas id="simCanvas" style="width:100%;height:100px;background:#141c28;border-radius:6px;margin-bottom:0.75rem"></canvas>
-      <h3 style="font-size:0.9rem;margin:0 0 0.5rem">Profile ranking</h3>
+      <h3 style="font-size:0.9rem;margin:0 0 0.5rem">Profile ranking <span id="sim-run-label" style="font-weight:normal;color:var(--muted);font-size:0.8rem"></span></h3>
       <div id="sim-compare-table"></div>
-      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Strategy ranking</h3>
+      <p style="margin:0.35rem 0 0.75rem;font-size:0.75rem">
+        <a href="#" id="sim-all-runs-toggle" style="color:var(--accent)">Show all runs (replay + history)</a>
+      </p>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Strategy ranking (this run)</h3>
       <div id="sim-strategy-table"></div>
-      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Best markets (selected profile)</h3>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Best markets (selected profile, this run)</h3>
       <div id="sim-best-markets"></div>
-      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Trade history (selected profile)</h3>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Trade history (selected profile, this run)</h3>
       <div id="sim-trade-history"><p class="empty">No trades loaded.</p></div>
     </div>
   </details>
@@ -557,7 +559,28 @@
     const historyEl = document.getElementById('sim-trade-history');
     const bannerEl = document.getElementById('sim-status-banner');
     const trackerEl = document.getElementById('sim-tracker');
+    const runLabelEl = document.getElementById('sim-run-label');
+    const allRunsToggle = document.getElementById('sim-all-runs-toggle');
     let profileMap = {};
+    let currentRunId = null;
+    let showAllRuns = false;
+
+    function simScopeQs() {
+      if (showAllRuns) return '&all_runs=true';
+      if (currentRunId != null) return '&sim_run_id=' + encodeURIComponent(currentRunId);
+      return '';
+    }
+
+    function updateRunLabel() {
+      if (!runLabelEl) return;
+      if (showAllRuns) {
+        runLabelEl.textContent = '(all runs)';
+      } else if (currentRunId != null) {
+        runLabelEl.textContent = '(forward run #' + currentRunId + ')';
+      } else {
+        runLabelEl.textContent = '(no forward run)';
+      }
+    }
 
     function formatHours(h) {
       if (h == null) return '—';
@@ -625,7 +648,14 @@
     async function loadTracker() {
       try {
         const d = await (await fetch('/api/sim/tracker')).json();
+        const prevRun = currentRunId;
+        currentRunId = d.current_run ? d.current_run.id : null;
         renderTracker(d);
+        updateRunLabel();
+        if (!showAllRuns && currentRunId !== prevRun) {
+          loadCompare();
+          if (sel.value) loadProfileSummary(sel.value);
+        }
       } catch (e) {
         trackerEl.innerHTML = '<p class="empty">Simulation tracker unavailable.</p>';
       }
@@ -679,7 +709,12 @@
 
     function renderCompare(rows) {
       if (!rows || !rows.length) {
-        compareEl.innerHTML = '<p class="empty">No closed trades yet — run <span class="mono">ploy-sim replay --days 14</span> (needs fair_values from ploy-reason).</p>';
+        const hint = showAllRuns
+          ? 'No closed trades in any run yet.'
+          : (currentRunId
+            ? 'No closed trades on forward run #' + currentRunId + ' yet — waiting for profile gates.'
+            : 'No active forward run — start <span class="mono">ploy-sim forward</span>.');
+        compareEl.innerHTML = '<p class="empty">' + hint + '</p>';
         return;
       }
       let html = '<table><thead><tr><th>Profile</th><th>P&amp;L</th><th>Closed</th><th>Win%</th></tr></thead><tbody>';
@@ -694,7 +729,7 @@
 
     function renderStrategyTable(rows) {
       if (!rows || !rows.length) {
-        strategyEl.innerHTML = '<p class="empty">No strategy data yet.</p>';
+        strategyEl.innerHTML = '<p class="empty">No strategy data on this run yet.</p>';
         return;
       }
       let html = '<table><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win%</th><th>P&amp;L</th><th>P&amp;L ($1/trade)</th><th>Avg P&amp;L</th></tr></thead><tbody>';
@@ -722,23 +757,11 @@
       strategyEl.innerHTML = html;
     }
 
-    async function loadRunsBanner() {
-      try {
-        const d = await (await fetch('/api/sim/runs?limit=3')).json();
-        if (!d.runs || !d.runs.length) return;
-        const latest = d.runs[0];
-        const extra = d.runs.length > 1 ? ` (${d.runs.length} recent runs)` : '';
-        bannerEl.innerHTML += `<br/>Last run: <strong>${latest.mode}</strong> #${latest.id} — ` +
-          `${latest.trade_count} trades (${latest.closed_count} closed) — ` +
-          `${latest.started_at}${latest.notes ? ' · ' + esc(latest.notes) : ''}${extra}`;
-      } catch (e) { /* ignore */ }
-    }
-
     async function loadTradeHistory(pid) {
       try {
-        const d = await (await fetch('/api/sim/trades?profile_id=' + encodeURIComponent(pid) + '&limit=40')).json();
+        const d = await (await fetch('/api/sim/trades?profile_id=' + encodeURIComponent(pid) + '&limit=40' + simScopeQs())).json();
         if (!d.trades || !d.trades.length) {
-          historyEl.innerHTML = '<p class="empty">No trades for this profile yet.</p>';
+          historyEl.innerHTML = '<p class="empty">No trades for this profile on this run.</p>';
           return;
         }
         let html = '<table><thead><tr><th>Opened</th><th>Dir</th><th>Edge</th><th>Conf</th><th>Model</th><th>P&amp;L</th><th>Status</th><th>Market</th></tr></thead><tbody>';
@@ -766,9 +789,12 @@
 
     async function loadCompare() {
       try {
-        const d = await (await fetch('/api/sim/summary')).json();
+        const qs = simScopeQs().replace(/^&/, '');
+        const d = await (await fetch('/api/sim/summary' + (qs ? '?' + qs : ''))).json();
+        if (!showAllRuns && d.sim_run_id != null) currentRunId = d.sim_run_id;
         renderCompare(d.compare || []);
         renderStrategyTable(d.by_strategy || []);
+        updateRunLabel();
       } catch (e) {
         compareEl.innerHTML = '<p class="empty">Simulation summary unavailable</p>';
         strategyEl.innerHTML = '';
@@ -780,7 +806,7 @@
       renderProfileParams(pid);
       loadTradeHistory(pid);
       try {
-        const d = await (await fetch('/api/sim/summary?profile_id=' + encodeURIComponent(pid))).json();
+        const d = await (await fetch('/api/sim/summary?profile_id=' + encodeURIComponent(pid) + simScopeQs())).json();
         const t = d.totals || {};
         const pnlEl = document.getElementById('sim-pnl');
         pnlEl.textContent = (t.total_pnl_cents >= 0 ? '+' : '') + (t.total_pnl_cents || 0).toFixed(1) + '¢';
@@ -800,7 +826,7 @@
           bestEl.innerHTML = '<p class="empty">No best-fit markets yet (need ≥10 closed trades per market).</p>';
         }
 
-        const sr = await (await fetch('/api/sim/series?profile_id=' + encodeURIComponent(pid))).json();
+        const sr = await (await fetch('/api/sim/series?profile_id=' + encodeURIComponent(pid) + simScopeQs())).json();
         const canvas = document.getElementById('simCanvas');
         const series = sr.series || [];
         if (canvas && series.length > 1) {
@@ -824,15 +850,26 @@
       } catch (e) { /* silent */ }
     }
 
+    if (allRunsToggle) {
+      allRunsToggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        showAllRuns = !showAllRuns;
+        allRunsToggle.textContent = showAllRuns
+          ? 'Show current forward run only'
+          : 'Show all runs (replay + history)';
+        updateRunLabel();
+        loadCompare();
+        if (sel.value) loadProfileSummary(sel.value);
+      });
+    }
+
     sel.addEventListener('change', () => loadProfileSummary(sel.value));
-    loadTracker();
-    loadProfiles().then(() => loadRunsBanner());
-    loadCompare();
+    loadTracker().then(() => loadCompare());
+    loadProfiles();
     setInterval(loadCompare, 60000);
     setInterval(loadTracker, 30000);
     setInterval(() => {
       if (sel.value) loadProfileSummary(sel.value);
-      loadRunsBanner();
     }, 60000);
   })();
 

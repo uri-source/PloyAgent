@@ -393,7 +393,11 @@ async def sim_profiles() -> dict[str, Any]:
 
 
 @app.get("/api/sim/summary")
-async def sim_summary(profile_id: str | None = None) -> dict[str, Any]:
+async def sim_summary(
+    profile_id: str | None = None,
+    sim_run_id: int | None = None,
+    all_runs: bool = False,
+) -> dict[str, Any]:
     from ploy_agent.sim.metrics import (
         best_fit_markets,
         compare_profiles,
@@ -405,42 +409,82 @@ async def sim_summary(profile_id: str | None = None) -> dict[str, Any]:
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        run_id = (
+            await sim_repo.resolve_forward_run_id(conn, sim_run_id)
+            if not all_runs
+            else sim_run_id
+        )
+        if not all_runs and run_id is None:
+            if profile_id:
+                return {
+                    "profile_id": profile_id,
+                    "sim_run_id": None,
+                    "totals": summarize_trades([]),
+                    "by_category": [],
+                    "by_market": [],
+                    "by_strategy": [],
+                    "best_fit": [],
+                }
+            return {"compare": [], "sim_run_id": None}
+
         if profile_id:
-            rows = await sim_repo.fetch_trades(conn, profile_id=profile_id, limit=20_000)
+            rows = await sim_repo.fetch_trades(
+                conn, profile_id=profile_id, sim_run_id=run_id, limit=20_000
+            )
             trades = trades_from_rows([dict(r) for r in rows])
             return {
                 "profile_id": profile_id,
+                "sim_run_id": run_id,
                 "totals": summarize_trades(trades),
                 "by_category": group_summary(trades, lambda t: t.category),
                 "by_market": group_summary(trades, lambda t: t.market_id)[:15],
                 "by_strategy": group_summary(trades, lambda t: t.strategy_id),
                 "best_fit": best_fit_markets(trades)[:10],
             }
-        rows = await sim_repo.fetch_trades(conn, limit=50_000)
+        rows = await sim_repo.fetch_trades(conn, sim_run_id=run_id, limit=50_000)
     trades = trades_from_rows([dict(r) for r in rows])
     return {
         "compare": compare_profiles(trades)[:20],
         "by_strategy": group_summary(trades, lambda t: t.strategy_id),
         "by_category": group_summary(trades, lambda t: t.category),
+        "sim_run_id": run_id,
     }
 
 
 @app.get("/api/sim/series")
-async def sim_series(profile_id: str) -> dict[str, Any]:
+async def sim_series(
+    profile_id: str,
+    sim_run_id: int | None = None,
+    all_runs: bool = False,
+) -> dict[str, Any]:
     from ploy_agent.sim.metrics import daily_cumulative_series, trades_from_rows
     from ploy_agent.sim import repo as sim_repo
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await sim_repo.fetch_trades(conn, profile_id=profile_id, limit=20_000)
+        run_id = (
+            await sim_repo.resolve_forward_run_id(conn, sim_run_id)
+            if not all_runs
+            else sim_run_id
+        )
+        if not all_runs and run_id is None:
+            return {"profile_id": profile_id, "sim_run_id": None, "series": []}
+        rows = await sim_repo.fetch_trades(
+            conn, profile_id=profile_id, sim_run_id=run_id, limit=20_000
+        )
     trades = trades_from_rows([dict(r) for r in rows])
-    return {"profile_id": profile_id, "series": daily_cumulative_series(trades)}
+    return {
+        "profile_id": profile_id,
+        "sim_run_id": run_id,
+        "series": daily_cumulative_series(trades),
+    }
 
 
 @app.get("/api/sim/trades")
 async def sim_trades_list(
     profile_id: str | None = None,
     sim_run_id: int | None = None,
+    all_runs: bool = False,
     limit: int = 50,
 ) -> dict[str, Any]:
     from ploy_agent.sim import repo as sim_repo
@@ -449,15 +493,22 @@ async def sim_trades_list(
     limit = min(max(limit, 1), 200)
     pool = await get_pool()
     async with pool.acquire() as conn:
+        run_id = (
+            await sim_repo.resolve_forward_run_id(conn, sim_run_id)
+            if not all_runs
+            else sim_run_id
+        )
+        if not all_runs and run_id is None:
+            return {"trades": [], "count": 0, "sim_run_id": None}
         rows = await sim_repo.fetch_trades(
             conn,
             profile_id=profile_id,
-            sim_run_id=sim_run_id,
+            sim_run_id=run_id,
             limit=limit,
         )
 
     trades = [trade_row_to_dict(r) for r in rows]
-    return {"trades": trades, "count": len(trades)}
+    return {"trades": trades, "count": len(trades), "sim_run_id": run_id}
 
 
 @app.get("/api/sim/tracker")

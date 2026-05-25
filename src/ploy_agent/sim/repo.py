@@ -166,6 +166,16 @@ async def clear_trades_for_run(conn: asyncpg.Connection, run_id: int) -> None:
     await conn.execute("DELETE FROM sim_trades WHERE sim_run_id = $1", run_id)
 
 
+async def resolve_forward_run_id(
+    conn: asyncpg.Connection, sim_run_id: int | None = None
+) -> int | None:
+    """Explicit run id, else latest forward run (active preferred). None if no forward run."""
+    if sim_run_id is not None:
+        return sim_run_id
+    row = await fetch_latest_forward_run(conn)
+    return int(row["id"]) if row else None
+
+
 async def fetch_latest_forward_run(conn: asyncpg.Connection) -> asyncpg.Record | None:
     """Most recent forward run (active first, else last finished)."""
     return await conn.fetchrow(

@@ -383,8 +383,10 @@ All close types compute P&L: resolution uses binary payoff, others use mark-to-m
 Shorter smoke test: `ploy-sim forward --hours 48` or `ploy-sim replay --days 7`.
 
 ### Dashboard
-Open **Simulation (paper trading)** on the web UI. **Tracker:** `GET /api/sim/tracker` (forward
-run status, BUY/SELL counts, recent trades). Also `/api/sim/summary`, `/api/sim/series?profile_id=...`.
+Open **Simulation (paper trading)** on the web UI — defaults to **current forward run** only.
+**Tracker:** `GET /api/sim/tracker` (forward run status, BUY/SELL counts, recent trades).
+Summary/trades/series: `/api/sim/summary`, `/api/sim/series?profile_id=...` (optional `sim_run_id`
+or `all_runs=true` for replay history). **Analytics:** `/analytics` and `/api/analytics/*`.
 
 ---
 
