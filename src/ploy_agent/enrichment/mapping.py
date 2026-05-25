@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ploy_agent.enrichment.sports import LiveGame
 
 
@@ -10,7 +12,7 @@ def _match_tokens(question_lower: str, game: LiveGame, side: str) -> bool:
         names = (game.away_team,) + tuple(game.away_aliases)
     for raw in names:
         t = raw.strip().lower()
-        if len(t) >= 3 and t in question_lower:
+        if len(t) >= 3 and re.search(r'\b' + re.escape(t) + r'\b', question_lower):
             return True
     return False
 

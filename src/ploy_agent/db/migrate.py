@@ -12,14 +12,24 @@ from ploy_agent.common.config import settings
 
 
 def _split_sql(sql: str) -> list[str]:
-    """Split migration file on statement boundaries (line ends with ';')."""
+    """Split migration file on statement boundaries.
+
+    Handles dollar-quoting ($$ ... $$) so PL/pgSQL blocks aren't broken.
+    """
     statements: list[str] = []
     cur: list[str] = []
+    in_dollar_quote = False
     for line in sql.splitlines():
-        if line.strip().startswith("--"):
+        stripped = line.strip()
+        if stripped.startswith("--") and not in_dollar_quote:
             continue
+        # Track dollar-quoting (toggle on each $$)
+        if "$$" in line:
+            count = line.count("$$")
+            if count % 2 == 1:
+                in_dollar_quote = not in_dollar_quote
         cur.append(line)
-        if line.strip().endswith(";"):
+        if not in_dollar_quote and stripped.endswith(";"):
             stmt = "\n".join(cur).strip()
             if stmt.endswith(";"):
                 stmt = stmt[:-1].strip()

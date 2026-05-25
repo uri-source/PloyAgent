@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -19,20 +23,33 @@ from ploy_agent.notifier.telegram import answer_callback, update_message_status 
 
 log = get_logger("events_server")
 
-app = FastAPI(title="PloyAgent Events Server")
 
-
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
     configure_logging()
-    app.state.pool = await get_pool()
-    app.state.http = httpx.AsyncClient()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await app.state.http.aclose()
+    application.state.pool = await get_pool()
+    application.state.http = httpx.AsyncClient()
+    yield
+    await application.state.http.aclose()
     await close_pool()
+
+
+app = FastAPI(title="PloyAgent Events Server", lifespan=_lifespan)
+
+
+def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
+    """Verify Slack request signature to prevent forged requests."""
+    signing_secret = settings.slack_signing_secret
+    if not signing_secret:
+        # No signing secret configured — skip verification (dev mode)
+        return True
+    if abs(time.time() - int(timestamp)) > 300:
+        return False  # Reject requests older than 5 minutes (replay attack)
+    sig_basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
+    computed = "v0=" + hmac.new(
+        signing_secret.encode(), sig_basestring.encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(computed, signature)
 
 
 # ---------- Slack ----------
@@ -40,14 +57,24 @@ async def _shutdown() -> None:
 
 @app.post("/slack/events")
 async def slack_events(request: Request) -> JSONResponse:
-    body = await request.json()
+    raw_body = await request.body()
+    ts = request.headers.get("X-Slack-Request-Timestamp", "0")
+    sig = request.headers.get("X-Slack-Signature", "")
+    if not _verify_slack_signature(raw_body, ts, sig):
+        return JSONResponse({"error": "invalid_signature"}, status_code=403)
+    body = json.loads(raw_body)
     if body.get("type") == "url_verification":
         return JSONResponse({"challenge": body["challenge"]})
     return JSONResponse({"ok": True})
 
 
 @app.post("/slack/interactions")
-async def slack_interactions(payload: str = Form(...)) -> JSONResponse:
+async def slack_interactions(request: Request, payload: str = Form(...)) -> JSONResponse:
+    raw_body = await request.body()
+    ts = request.headers.get("X-Slack-Request-Timestamp", "0")
+    sig = request.headers.get("X-Slack-Signature", "")
+    if not _verify_slack_signature(raw_body, ts, sig):
+        return JSONResponse({"error": "invalid_signature"}, status_code=403)
     data: dict[str, Any] = json.loads(payload)
     actions = data.get("actions") or []
     user = data.get("user", {}).get("id", "unknown")
@@ -69,13 +96,13 @@ async def slack_interactions(payload: str = Form(...)) -> JSONResponse:
             await rec_repo.set_status(conn, rec_id, status, notes=f"by slack user {user}")
 
         channel = data.get("channel", {}).get("id") or data.get("container", {}).get("channel_id", "")
-        ts = data.get("message", {}).get("ts") or data.get("container", {}).get("message_ts", "")
+        msg_ts = data.get("message", {}).get("ts") or data.get("container", {}).get("message_ts", "")
 
-        if channel and ts:
+        if channel and msg_ts:
             await slack_update(
                 app.state.http,
                 channel,
-                ts,
+                msg_ts,
                 rec_id,
                 status,
                 user,

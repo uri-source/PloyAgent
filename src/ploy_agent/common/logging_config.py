@@ -29,10 +29,19 @@ class _TeeIO:
             s.flush()
 
 
+_log_file_handle: IO[Any] | None = None
+_configured = False
+
+
 def configure_logging() -> None:
+    global _log_file_handle, _configured
+    if _configured:
+        return  # Already configured — avoid duplicate file handles
     log_path = Path(settings.agent_log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open("a", encoding="utf-8")
+    _log_file_handle = log_file
+    _configured = True
     out: IO[Any] = _TeeIO(sys.stdout, log_file)
 
     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)

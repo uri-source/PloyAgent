@@ -17,7 +17,8 @@ services:
 
   migrate:
     build: .
-    command: ploy-migrate
+    command: >
+      sh -c "sleep 3 && ploy-migrate"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -34,6 +35,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
   enrich:
@@ -45,6 +49,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
   reason:
@@ -56,6 +63,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
   notify:
@@ -67,6 +77,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
   web:
@@ -81,6 +94,23 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
       WEB_HOST: "0.0.0.0"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+
+  sim-forward:
+    build: .
+    command: ploy-sim forward
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
   slack-events:
@@ -94,6 +124,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
 volumes:

@@ -14,14 +14,22 @@ def dsn() -> str:
 
 
 _pool: asyncpg.Pool | None = None
-_pool_lock = asyncio.Lock()
+_pool_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    """Lazily create lock in the running event loop."""
+    global _pool_lock
+    if _pool_lock is None:
+        _pool_lock = asyncio.Lock()
+    return _pool_lock
 
 
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is not None:
         return _pool
-    async with _pool_lock:
+    async with _get_lock():
         if _pool is None:
             _pool = await asyncpg.create_pool(dsn(), min_size=1, max_size=10)
     return _pool

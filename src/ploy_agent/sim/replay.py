@@ -23,6 +23,7 @@ async def load_resolved_outcomes(conn: asyncpg.Connection) -> dict[str, int]:
         FROM final_prices fp
         JOIN markets m ON m.id = fp.market_id
         WHERE m.status = 'closed'
+           OR (m.end_date IS NOT NULL AND m.end_date < NOW() - INTERVAL '30 minutes')
         """
     )
     out: dict[str, int] = {}
@@ -49,11 +50,12 @@ def _row_to_signal(row: asyncpg.Record, now: datetime) -> SimSignal:
     end = row.get("end_date")
     if isinstance(end, datetime) and end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
-    h = hours_until(end) if end else 24.0
+    h = hours_until(end, now) if end else 24.0
     edge = float(row["edge_cents"])
     conf = float(row["confidence"])
     depth = float(row.get("depth_1c") or 0.0)
-    sc = composite_score(edge, depth, conf, h)
+    market_prob = float(row["market_prob"])
+    sc = composite_score(edge, depth, conf, h, market_mid=market_prob)
     ts = row["ts"]
     if isinstance(ts, datetime) and ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
@@ -111,6 +113,13 @@ async def run_replay(
         outcome = outcomes.get(mid)
 
         for pf in portfolios.values():
+            key = (pf.profile.id, mid)
+
+            # Skip opening new positions on already-resolved markets
+            # (only process if we already have an open position to close)
+            if resolved and key not in pf.state.open_by_key:
+                continue
+
             closed = pf.process_signal(
                 signal,
                 market_resolved=resolved,
@@ -119,7 +128,6 @@ async def run_replay(
             for ct in closed:
                 await sim_repo.close_trade(conn, ct)
 
-            key = (pf.profile.id, mid)
             pos = pf.state.open_by_key.get(key)
             if pos is not None and pos.trade_id is None:
                 pos.trade_id = await sim_repo.insert_open_trade(conn, run_id, pos)

@@ -5,9 +5,15 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+from ploy_agent.common.config import settings
 from ploy_agent.common.fair_value_decay import decay_factor
 from ploy_agent.common.kelly import kelly_fraction
-from ploy_agent.common.scoring import composite_score, hours_until
+from ploy_agent.common.scoring import (
+    composite_score,
+    hours_until,
+    passes_entry_price_gate,
+    passes_risk_reward_gate,
+)
 
 
 @dataclass
@@ -26,6 +32,7 @@ class RankedPick:
     score: float
     kelly_frac: float = 0.0
     decay: float = 1.0
+    category: str = ""
 
 
 async def top_picks(
@@ -61,6 +68,7 @@ async def top_picks(
                lf.strategy_id,
                m.question,
                m.end_date,
+               m.category,
                lp.mid,
                lf.model_prob,
                lf.market_prob,
@@ -98,10 +106,10 @@ async def top_picks(
         effective_edge = edge * d
 
         # Composite score uses decayed edge
-        sc = composite_score(effective_edge, depth, conf, h)
+        sc = composite_score(effective_edge, depth, conf, h, market_mid=market_prob)
 
-        # Kelly sizing (display-only)
-        kf = kelly_fraction(model_prob, market_prob, edge)
+        # Kelly sizing (display-only) — uses decayed edge for consistency
+        kf = kelly_fraction(model_prob, market_prob, effective_edge)
 
         picks.append(
             RankedPick(
@@ -119,8 +127,19 @@ async def top_picks(
                 score=sc,
                 kelly_frac=kf,
                 decay=d,
+                category=str(r.get("category") or ""),
             )
         )
+    # Phase 1 guardrails: entry price cap + risk-reward gate
+    before_guard = len(picks)
+    picks = [
+        p for p in picks
+        if passes_entry_price_gate(p.market_prob, settings.entry_price_min, settings.entry_price_max)
+        and passes_risk_reward_gate(p.market_prob, p.edge_cents, settings.min_risk_reward)
+    ]
+    dropped_guard = before_guard - len(picks)
+    # (caller can log if needed; we silently filter here)
+
     picks.sort(key=lambda p: p.score, reverse=True)
     if merge_by_market:
         best: dict[str, RankedPick] = {}

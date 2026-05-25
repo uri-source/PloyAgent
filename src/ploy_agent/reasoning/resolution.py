@@ -7,8 +7,16 @@ from ploy_agent.common.config import settings
 
 
 _AMBIGUOUS = re.compile(
-    r"\b(officially|according to|at the discretion|twitter|x\.com|reddit|wikipedia|"
-    r"third[- ]party|external source|news article)\b",
+    r"\b("
+    r"at the discretion|"
+    r"twitter\.com|x\.com/|reddit\.com|wikipedia\.org|"
+    r"twitter\s+announcement|twitter\s+post|twitter\s+account|"
+    r"reddit\s+discussion|reddit\s+thread|reddit\s+post|"
+    r"(?:based on|per|according to)\s+(?:official|twitter|reddit|wikipedia)|"
+    r"officially\s+announced|"
+    r"according\s+to\b|"
+    r"third[- ]party\s+source|external\s+source|news\s+article\s+confirms"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -21,27 +29,27 @@ def heuristic_resolution_safe(text: str | None) -> tuple[bool, str]:
     return True, "heuristic_ok"
 
 
-_anthropic_client = None
+_async_anthropic_client = None
 
 
-def _get_anthropic():
-    global _anthropic_client
-    if _anthropic_client is None:
+def _get_async_anthropic():
+    global _async_anthropic_client
+    if _async_anthropic_client is None:
         import anthropic
-        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    return _anthropic_client
+        _async_anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _async_anthropic_client
 
 
-def resolution_gate(text: str | None) -> tuple[bool, str]:
-    """Heuristic + optional Anthropic classification (sync)."""
+async def resolution_gate(text: str | None) -> tuple[bool, str]:
+    """Heuristic + optional async Anthropic classification."""
     safe, reason = heuristic_resolution_safe(text)
     if not safe:
         return safe, reason
     if not settings.anthropic_api_key:
         return safe, reason
     try:
-        ac = _get_anthropic()
-        msg = ac.messages.create(
+        ac = _get_async_anthropic()
+        msg = await ac.messages.create(
             model=settings.anthropic_model,
             max_tokens=200,
             messages=[

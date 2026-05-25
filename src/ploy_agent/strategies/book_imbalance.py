@@ -88,8 +88,10 @@ class BookImbalanceStrategy(Strategy):
         if abs(imbalance) < _IMBALANCE_THRESHOLD:
             return None
 
-        # Shift probability based on imbalance direction and magnitude
-        shift = imbalance * _PROB_SHIFT_SCALE
+        # Predict short-term directional pressure.
+        # Scale shift by distance from extremes — prices near 0 or 1 move less.
+        elasticity = 4.0 * ctx.mid * (1.0 - ctx.mid)  # peaks at 0.5, zero at 0/1
+        shift = imbalance * _PROB_SHIFT_SCALE * elasticity
         model_prob = max(0.01, min(0.99, ctx.mid + shift))
         market_prob = ctx.mid
         edge = (model_prob - market_prob) * 100.0

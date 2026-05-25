@@ -7,8 +7,10 @@ import signal
 import httpx
 
 from ploy_agent.common.adaptive_edge import adaptive_min_edge
+from ploy_agent.common.market_type import classify_market_type, classify_sport_category
 from ploy_agent.common.pnl import compute_pnl_cents, outcome_from_final_mid
 from ploy_agent.common.config import settings
+from ploy_agent.common.scoring import passes_entry_price_gate, passes_risk_reward_gate
 from ploy_agent.common.db import close_pool, get_pool
 from ploy_agent.common.logging_config import configure_logging, get_logger
 from ploy_agent.notifier import repo as rec_repo
@@ -39,8 +41,8 @@ async def _recently_notified_edges(
             SELECT DISTINCT ON (market_id) market_id, payload_json
             FROM recommendations
             WHERE market_id = ANY($1::text[])
-              AND ts > NOW() - INTERVAL '15 minutes'
-              AND status = 'pending'
+              AND resolved_outcome IS NULL
+              AND status IN ('pending', 'approved')
             ORDER BY market_id, ts DESC
             """,
             market_ids,
@@ -55,18 +57,27 @@ async def _recently_notified_edges(
 
 
 async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
-    """Check approved recommendations whose markets have closed and compute P&L."""
+    """Check approved recommendations whose markets have closed and compute P&L.
+
+    Resolution triggers:
+    1. Market status is 'closed' in our DB (set by ingestion from Gamma)
+    2. Market end_date is in the past AND final price is near 0 or 1
+       (covers cases where ingestion hasn't re-fetched the closed status)
+    """
     async with pool.acquire() as conn:
         unresolved = await conn.fetch(
             """
-            SELECT r.id, r.market_id, r.payload_json, m.status AS market_status,
-                   r.slack_channel, r.slack_ts
+            SELECT r.id, r.market_id, r.payload_json, r.entry_price,
+                   m.status AS market_status, r.slack_channel, r.slack_ts
             FROM recommendations r
             JOIN markets m ON m.id = r.market_id
             WHERE r.status = 'approved'
               AND r.resolved_outcome IS NULL
-              AND m.status = 'closed'
-            LIMIT 50
+              AND (
+                m.status = 'closed'
+                OR (m.end_date IS NOT NULL AND m.end_date < NOW() - INTERVAL '30 minutes')
+              )
+            LIMIT 100
             """
         )
         if not unresolved:
@@ -79,10 +90,12 @@ async def _resolve_pnl(pool, http: httpx.AsyncClient) -> None:
                 payload = json.loads(payload)
 
             edge_cents = float(payload.get("edge_cents", 0))
-            market_prob = float(payload.get("market_prob", 0.5))
-
             is_buy = edge_cents > 0
-            entry_price = market_prob
+
+            # Use approval-time entry_price if available, fallback to model-eval-time market_prob
+            entry_price = float(row["entry_price"]) if row.get("entry_price") else float(
+                payload.get("market_prob", 0.5)
+            )
 
             final_price = await conn.fetchval(
                 """
@@ -176,6 +189,27 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
             )
     picks = deduped[: settings.rank_top_n]
 
+    # Phase 1 guardrails: entry price cap + risk-reward gate
+    before_guard = len(picks)
+    picks = [
+        p for p in picks
+        if passes_entry_price_gate(
+            p.market_prob, settings.entry_price_min, settings.entry_price_max
+        )
+        and passes_risk_reward_gate(
+            p.market_prob, p.edge_cents, settings.min_risk_reward
+        )
+    ]
+    dropped_guard = before_guard - len(picks)
+    if dropped_guard:
+        log.info(
+            "guardrail_filter_dropped",
+            dropped=dropped_guard,
+            price_min=settings.entry_price_min,
+            price_max=settings.entry_price_max,
+            min_rr=settings.min_risk_reward,
+        )
+
     async with pool.acquire() as conn:
         adaptive_edge = await adaptive_min_edge(conn)
     min_e = settings.alert_min_edge or adaptive_edge
@@ -223,12 +257,19 @@ async def _tick(pool, http: httpx.AsyncClient) -> None:
                     "confidence": p.confidence,
                     "reasoning": p.reasoning,
                 }
+                q = p.question or ""
+                mtype = classify_market_type(q)
+                cat = classify_sport_category(p.category, q)
                 rec_id = await rec_repo.insert_recommendation(
                     conn,
                     market_id=p.market_id,
                     score=p.score,
                     payload=payload,
                     strategy_id=p.strategy_id,
+                    category=cat,
+                    market_type=mtype,
+                    question=q,
+                    auto_approve=settings.auto_approve_recs,
                 )
                 created += 1
                 feed_entries.append(SlackFeedEntry(pick=p, rec_id=rec_id))

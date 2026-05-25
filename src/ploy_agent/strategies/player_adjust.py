@@ -45,9 +45,9 @@ class PlayerAdjustStrategy(Strategy):
         away_team = str(gs.get("away_team") or "")
         p_home = predict_home_win_prob(
             ctx.model,
-            home_score=int(gs["home_score"] or 0),
-            away_score=int(gs["away_score"] or 0),
-            period=int(gs["period"] or 0) or None,
+            home_score=int(gs.get("home_score") or 0),
+            away_score=int(gs.get("away_score") or 0),
+            period=int(gs.get("period") or 0) or None,
             possession=gs.get("possession"),
             home_team=home_team,
             away_team=away_team,

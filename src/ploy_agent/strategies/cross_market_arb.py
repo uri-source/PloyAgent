@@ -64,24 +64,26 @@ class CrossMarketArbStrategy(Strategy):
         if dev <= settings.cross_market_sum_deviation:
             return None
 
-        # Multi-outcome arb: find which outcome is most mispriced.
-        # Simple normalization (mid/total) always produces SELL when overround >1.
-        # Instead, compare this outcome's share of overround vs siblings.
-        # If ALL outcomes are equally overpriced, there's no actionable signal
-        # for any single outcome — skip.
+        # Multi-outcome arb: check if this outcome deviates more than siblings.
+        # Use rank-based approach: only signal the most-mispriced outcome(s).
         n_outcomes = len(siblings) + 1
-        overround = total_mid - 1.0  # positive = overround, negative = underround
 
-        # Each outcome's "fair share" of the deviation
-        fair_share_dev = overround * (mid_self / total_mid) if total_mid > 0 else 0
-        # This outcome's actual deviation from its normalized value
+        # Normalized fair value for each outcome
         fair_self = mid_self / total_mid if total_mid > 0 else mid_self
-        outcome_dev = mid_self - fair_self  # how much THIS outcome is inflated
 
-        # Only signal if this outcome absorbs a disproportionate share of the
-        # overround — i.e., it's MORE mispriced than its proportional share.
-        # The threshold: this outcome's deviation must exceed 1.5× its fair share.
-        if abs(fair_share_dev) > 0 and abs(outcome_dev) < abs(fair_share_dev) * 1.5:
+        # Collect all mids and compute each outcome's edge vs its fair share
+        all_mids = [(ctx.market_id, mid_self)] + list(siblings)
+        edges = []
+        for oid, omid in all_mids:
+            ofair = omid / total_mid if total_mid > 0 else omid
+            edges.append((oid, abs(omid - ofair)))
+
+        # Sort by absolute edge descending — only signal if this market
+        # is in the top quartile of mispricing among siblings
+        edges.sort(key=lambda x: x[1], reverse=True)
+        top_cutoff = max(1, n_outcomes // 4)
+        top_ids = {oid for oid, _ in edges[:top_cutoff]}
+        if ctx.market_id not in top_ids:
             return None
 
         # For underround (total < 1.0), the market is underpriced overall,
@@ -116,7 +118,6 @@ class CrossMarketArbStrategy(Strategy):
                 "total_mid": total_mid,
                 "n_siblings": len(siblings),
                 "sum_deviation": dev,
-                "outcome_dev_share": round(outcome_dev / fair_share_dev, 2)
-                if fair_share_dev else 0,
+                "this_edge_cents": round(edge, 2),
             },
         )

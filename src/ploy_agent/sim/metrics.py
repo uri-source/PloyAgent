@@ -106,7 +106,9 @@ def best_fit_markets(
         wr = row.get("win_rate")
         pnl = float(row.get("total_pnl_cents") or 0)
         if wr is not None and wr >= min_win_rate and pnl > 0:
-            sample = next(t for t in trades if t.market_id == row["key"])
+            sample = next((t for t in trades if t.market_id == row["key"]), None)
+            if sample is None:
+                continue
             fits.append(
                 {
                     "market_id": row["key"],

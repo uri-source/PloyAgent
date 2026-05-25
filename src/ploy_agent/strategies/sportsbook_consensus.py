@@ -67,7 +67,10 @@ class SportsbookConsensusStrategy(Strategy):
                 price = o.get("price")
                 if price is None or not name:
                     continue
-                by_name[name] = american_to_implied_prob(float(price))
+                imp = american_to_implied_prob(float(price))
+                if imp is None:
+                    continue
+                by_name[name] = imp
             ih = _implied_for_team(by_name, home_name)
             ia = _implied_for_team(by_name, away_name)
             if ih is None or ia is None:

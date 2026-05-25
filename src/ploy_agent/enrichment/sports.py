@@ -44,6 +44,13 @@ class SportsProvider(ABC):
         raise NotImplementedError
 
 
+def _safe_int(val: Any) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
+
 def _team_tokens(team_obj: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
     team = team_obj.get("team") or {}
     display = str(team.get("displayName") or "").strip()
@@ -166,8 +173,12 @@ class OddsApiProvider(SportsProvider):
                 scores = g.get("scores") or []
                 home_team = str(g.get("home_team") or "")
                 away_team = str(g.get("away_team") or "")
-                home_s = next((int(s["score"]) for s in scores if s.get("name") == home_team), 0)
-                away_s = next((int(s["score"]) for s in scores if s.get("name") == away_team), 0)
+                home_s = next(
+                    (_safe_int(s.get("score")) for s in scores if s.get("name") == home_team), 0
+                )
+                away_s = next(
+                    (_safe_int(s.get("score")) for s in scores if s.get("name") == away_team), 0
+                )
                 out.append(
                     LiveGame(
                         game_id=str(g.get("id")),

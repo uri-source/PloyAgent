@@ -147,7 +147,14 @@ def build_message_blocks(entries: list[SlackFeedEntry]) -> list[dict[str, Any]]:
         )
         return blocks
     for entry in entries:
-        blocks.extend(_pick_block(entry))
+        pick_blocks = _pick_block(entry)
+        if len(blocks) + len(pick_blocks) > 49:  # Slack max 50 blocks
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"_… and {len(entries) - len(blocks) // 5} more picks (truncated)_"}],
+            })
+            break
+        blocks.extend(pick_blocks)
     return blocks
 
 

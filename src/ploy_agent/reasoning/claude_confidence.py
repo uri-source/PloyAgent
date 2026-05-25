@@ -5,8 +5,21 @@ from typing import Any
 
 from ploy_agent.common.config import settings
 
+_async_client = None
 
-def confidence_and_reasoning(
+
+def _get_async_client():
+    global _async_client
+    if _async_client is None:
+        import anthropic
+
+        _async_client = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key
+        )
+    return _async_client
+
+
+async def confidence_and_reasoning(
     *,
     question: str | None,
     model_prob: float,
@@ -34,14 +47,9 @@ def confidence_and_reasoning(
             f"No LLM key — statistical confidence. {reasoning}",
             [{"type": "statistical", "detail": "market_microstructure"}],
         )
-    import anthropic
 
-    if not hasattr(confidence_and_reasoning, "_client"):
-        confidence_and_reasoning._client = anthropic.Anthropic(
-            api_key=settings.anthropic_api_key
-        )
-    ac = confidence_and_reasoning._client
-    msg = ac.messages.create(
+    ac = _get_async_client()
+    msg = await ac.messages.create(
         model=settings.anthropic_model,
         max_tokens=400,
         messages=[

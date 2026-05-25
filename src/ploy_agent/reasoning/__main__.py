@@ -108,7 +108,7 @@ async def _evaluate_market(
 
         cached = await repo.get_resolution_cache(conn, market_id)
         if cached is None:
-            safe, reason = await asyncio.to_thread(resolution_gate, crit)
+            safe, reason = await resolution_gate(crit)
             await repo.set_resolution_cache(conn, market_id, safe, reason)
         else:
             safe, reason = cached

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from ploy_agent.common.pnl import compute_pnl_cents, trade_direction
+from ploy_agent.common.config import settings
+from ploy_agent.common.pnl import compute_pnl_cents, mtm_pnl_cents, trade_direction
+from ploy_agent.common.scoring import passes_entry_price_gate, passes_risk_reward_gate
 from ploy_agent.sim.rules import is_reverse_signal, should_enter
 from ploy_agent.sim.types import ClosedTrade, OpenPosition, PortfolioState, SimProfile, SimSignal
 
@@ -33,6 +35,15 @@ class ProfilePortfolio:
 
     def try_enter(self, signal: SimSignal) -> OpenPosition | None:
         if not should_enter(signal, self.profile):
+            return None
+        # Phase 1 guardrails: entry price cap + risk-reward gate
+        if not passes_entry_price_gate(
+            signal.market_prob, settings.entry_price_min, settings.entry_price_max
+        ):
+            return None
+        if not passes_risk_reward_gate(
+            signal.market_prob, signal.edge_cents, settings.min_risk_reward
+        ):
             return None
         key = _pos_key(self.profile.id, signal.market_id)
         if key in self.state.open_by_key:
@@ -78,6 +89,8 @@ class ProfilePortfolio:
             return None
         if pnl_cents is None and resolved_outcome is not None:
             pnl_cents = compute_pnl_cents(pos.entry_price, pos.direction, resolved_outcome)
+        elif pnl_cents is None and exit_price is not None:
+            pnl_cents = mtm_pnl_cents(pos.entry_price, exit_price, pos.direction)
         elif pnl_cents is None:
             pnl_cents = 0.0
         return ClosedTrade(
@@ -157,7 +170,8 @@ class ProfilePortfolio:
         exit_prices: dict[str, float] | None = None,
     ) -> list[ClosedTrade]:
         closed: list[ClosedTrade] = []
-        for market_id in list(self.state.open_by_key.keys()):
+        for key in list(self.state.open_by_key.keys()):
+            _, market_id = key
             exit_p = (exit_prices or {}).get(market_id)
             ct = self.close_position(
                 market_id,

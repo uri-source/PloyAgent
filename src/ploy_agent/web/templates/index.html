@@ -232,6 +232,10 @@
   </style>
 </head>
 <body>
+  <div style="margin-bottom:12px;">
+    <a href="/" style="color:#3d9eff;margin-right:16px;text-decoration:none;"><b>Dashboard</b></a>
+    <a href="/analytics" style="color:#3d9eff;text-decoration:none;">Analytics</a>
+  </div>
   <h1>Polymarket Edge Agent</h1>
   <p class="sub">
   Ranked trading ideas from your strategies — <strong>BUY</strong> means model fair value is above the market;
@@ -350,6 +354,8 @@
       <canvas id="simCanvas" style="width:100%;height:100px;background:#141c28;border-radius:6px;margin-bottom:0.75rem"></canvas>
       <h3 style="font-size:0.9rem;margin:0 0 0.5rem">Profile ranking</h3>
       <div id="sim-compare-table"></div>
+      <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Strategy ranking</h3>
+      <div id="sim-strategy-table"></div>
       <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Best markets (selected profile)</h3>
       <div id="sim-best-markets"></div>
       <h3 style="font-size:0.9rem;margin:1rem 0 0.5rem">Trade history (selected profile)</h3>
@@ -545,6 +551,7 @@
   (function() {
     const sel = document.getElementById('sim-profile-select');
     const compareEl = document.getElementById('sim-compare-table');
+    const strategyEl = document.getElementById('sim-strategy-table');
     const bestEl = document.getElementById('sim-best-markets');
     const paramsEl = document.getElementById('sim-profile-params');
     const historyEl = document.getElementById('sim-trade-history');
@@ -685,6 +692,36 @@
       compareEl.innerHTML = html;
     }
 
+    function renderStrategyTable(rows) {
+      if (!rows || !rows.length) {
+        strategyEl.innerHTML = '<p class="empty">No strategy data yet.</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win%</th><th>P&amp;L</th><th>P&amp;L ($1/trade)</th><th>Avg P&amp;L</th></tr></thead><tbody>';
+      rows.forEach(r => {
+        const wr = r.win_rate != null ? (r.win_rate * 100).toFixed(1) + '%' : 'n/a';
+        const n = r.closed_count || 0;
+        const wins = r.wins || 0;
+        const losses = n - wins;
+        const pnl = r.total_pnl_cents || 0;
+        const color = pnl >= 0 ? 'var(--pos)' : 'var(--neg)';
+        const wrColor = r.win_rate != null ? (r.win_rate >= 0.55 ? 'var(--pos)' : r.win_rate < 0.45 ? 'var(--neg)' : 'var(--muted)') : 'var(--muted)';
+        const avg = n > 0 ? (pnl / n).toFixed(1) : '0.0';
+        html += `<tr>
+          <td class="mono">${esc(r.key)}</td>
+          <td>${n}</td>
+          <td style="color:var(--pos)">${wins}</td>
+          <td style="color:var(--neg)">${losses}</td>
+          <td style="color:${wrColor}">${wr}</td>
+          <td class="mono" style="color:${color}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}¢</td>
+          <td class="mono" style="color:${color}">$${(pnl / 100).toFixed(2)}</td>
+          <td class="mono" style="color:${pnl >= 0 ? 'var(--pos)' : 'var(--neg)'}">${avg}¢</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      strategyEl.innerHTML = html;
+    }
+
     async function loadRunsBanner() {
       try {
         const d = await (await fetch('/api/sim/runs?limit=3')).json();
@@ -731,7 +768,11 @@
       try {
         const d = await (await fetch('/api/sim/summary')).json();
         renderCompare(d.compare || []);
-      } catch (e) { compareEl.innerHTML = '<p class="empty">Simulation summary unavailable</p>'; }
+        renderStrategyTable(d.by_strategy || []);
+      } catch (e) {
+        compareEl.innerHTML = '<p class="empty">Simulation summary unavailable</p>';
+        strategyEl.innerHTML = '';
+      }
     }
 
     async function loadProfileSummary(pid) {

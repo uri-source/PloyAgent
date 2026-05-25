@@ -29,13 +29,23 @@ class LocalBook:
         self.bids[asset_id].clear()
         self.asks[asset_id].clear()
         for b in bids:
-            p = float(str(b.get("price")))
-            s = float(str(b.get("size")))
+            raw_p, raw_s = b.get("price"), b.get("size")
+            if raw_p is None or raw_s is None:
+                continue
+            try:
+                p, s = float(str(raw_p)), float(str(raw_s))
+            except (ValueError, TypeError):
+                continue
             if s > 0:
                 self.bids[asset_id][p] = s
         for a in asks:
-            p = float(str(a.get("price")))
-            s = float(str(a.get("size")))
+            raw_p, raw_s = a.get("price"), a.get("size")
+            if raw_p is None or raw_s is None:
+                continue
+            try:
+                p, s = float(str(raw_p)), float(str(raw_s))
+            except (ValueError, TypeError):
+                continue
             if s > 0:
                 self.asks[asset_id][p] = s
 
@@ -86,7 +96,7 @@ async def run_market_ws(
                     elif et == "price_change":
                         await _handle_price_change(msg, book, asset_to_market, on_update)
                     elif et == "best_bid_ask":
-                        await _handle_best_bid_ask(msg, asset_to_market, on_update)
+                        await _handle_best_bid_ask(msg, book, asset_to_market, on_update)
                     elif et == "last_trade_price":
                         aid = str(msg.get("asset_id"))
                         mid = asset_to_market.get(aid)
@@ -147,7 +157,13 @@ async def _handle_price_change(
         market_id = asset_to_market.get(aid)
         if not market_id:
             continue
-        book.apply_price_change(aid, str(ch.get("price")), str(ch.get("size")), str(ch.get("side")))
+        raw_p, raw_s, raw_side = ch.get("price"), ch.get("size"), ch.get("side")
+        if raw_p is None or raw_s is None or raw_side is None:
+            continue
+        try:
+            book.apply_price_change(aid, str(raw_p), str(raw_s), str(raw_side))
+        except (ValueError, TypeError):
+            continue
         bids, asks = book.levels(aid)
         bb = float(ch["best_bid"]) if ch.get("best_bid") not in (None, "") else None
         ba = float(ch["best_ask"]) if ch.get("best_ask") not in (None, "") else None
@@ -162,6 +178,7 @@ async def _handle_price_change(
 
 async def _handle_best_bid_ask(
     msg: dict[str, Any],
+    book: LocalBook,
     asset_to_market: dict[str, str],
     on_update: Callable[..., Awaitable[None]],
 ) -> None:
@@ -176,8 +193,7 @@ async def _handle_best_bid_ask(
     if ba == 0:
         ba = None
     m = mid_from_ba(bb, ba)
-    # depth unknown without full book — approximate with spread liquidity
-    depth = 0.0
-    if bb is not None and ba is not None:
-        depth = max(0.0, 1.0 / (0.0001 + abs(ba - bb)))
+    # Use real book depth if available, else 0 (no fake pseudo-depth)
+    bids, asks = book.levels(aid)
+    depth = depth_within_one_cent(bids, asks, bb, ba)
     await on_update(market_id, bb, ba, m, depth)

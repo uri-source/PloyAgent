@@ -237,11 +237,33 @@ async def dashboard(request: Request) -> Any:
             strategy_ids=settings.strategy_ids(),
             merge_by_market=settings.rank_merge_by_market,
         )
+        # Use approximate counts for hypertables to avoid slow full scans
+        async def _approx_count(table: str) -> int:
+            # TimescaleDB: sum reltuples across all chunks for the hypertable
+            approx = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(c.reltuples), 0)::bigint
+                FROM _timescaledb_catalog.hypertable h
+                JOIN _timescaledb_catalog.chunk ch ON ch.hypertable_id = h.id
+                JOIN pg_class c ON c.oid = format('%I.%I',
+                    ch.schema_name, ch.table_name)::regclass
+                WHERE h.table_name = $1
+                """,
+                table,
+            )
+            if approx and int(approx) > 0:
+                return int(approx)
+            # Fallback: plain pg_class (works for non-hypertables)
+            approx2 = await conn.fetchval(
+                "SELECT reltuples::bigint FROM pg_class WHERE relname = $1", table
+            )
+            return int(approx2) if approx2 and approx2 > 0 else 0
+
         stats = {
             "markets": int(await conn.fetchval("SELECT COUNT(*) FROM markets") or 0),
-            "prices": int(await conn.fetchval("SELECT COUNT(*) FROM prices") or 0),
-            "game_state": int(await conn.fetchval("SELECT COUNT(*) FROM game_state") or 0),
-            "fair_values": int(await conn.fetchval("SELECT COUNT(*) FROM fair_values") or 0),
+            "prices": await _approx_count("prices"),
+            "game_state": await _approx_count("game_state"),
+            "fair_values": await _approx_count("fair_values"),
             "recommendations": int(
                 await conn.fetchval("SELECT COUNT(*) FROM recommendations") or 0
             ),
@@ -396,7 +418,11 @@ async def sim_summary(profile_id: str | None = None) -> dict[str, Any]:
             }
         rows = await sim_repo.fetch_trades(conn, limit=50_000)
     trades = trades_from_rows([dict(r) for r in rows])
-    return {"compare": compare_profiles(trades)[:20]}
+    return {
+        "compare": compare_profiles(trades)[:20],
+        "by_strategy": group_summary(trades, lambda t: t.strategy_id),
+        "by_category": group_summary(trades, lambda t: t.category),
+    }
 
 
 @app.get("/api/sim/series")
@@ -539,16 +565,20 @@ async def api_recommendations() -> dict[str, Any]:
 # ---------- SSE (Server-Sent Events) for real-time updates ----------
 
 
-async def _sse_generator():
-    """Poll DB every 2 seconds and push changes as SSE events."""
+async def _sse_generator(request: Request):
+    """Poll DB every 2 seconds and push changes as SSE events.
+
+    Holds a single DB connection for the lifetime of the SSE stream (Bug 18 fix).
+    Detects client disconnect via request.is_disconnected() (Bug 17 fix).
+    """
     pool = await get_pool()
     last_price_ts: str | None = None
     last_fv_ts: str | None = None
     last_rec_id: int | None = None
 
-    while True:
-        try:
-            async with pool.acquire() as conn:
+    async with pool.acquire() as conn:
+        while not await request.is_disconnected():
+            try:
                 # Latest price tick
                 price_row = await conn.fetchrow(
                     """
@@ -578,69 +608,69 @@ async def _sse_generator():
                     )
                     stats[tbl] = int(approx) if approx and approx > 0 else 0
 
-            # Emit price tick if new
-            if price_row:
-                pts = str(price_row["ts"])
-                if pts != last_price_ts:
-                    last_price_ts = pts
-                    data = {
-                        "ts": pts,
-                        "market_id": price_row["market_id"],
-                        "question": price_row["question"] or "",
-                        "category": price_row["category"] or "",
-                        "mid": float(price_row["mid"]) if price_row["mid"] else None,
-                        "bid": float(price_row["bid"]) if price_row["bid"] else None,
-                        "ask": float(price_row["ask"]) if price_row["ask"] else None,
-                    }
-                    yield f"event: price_tick\ndata: {json.dumps(data)}\n\n"
+                # Emit price tick if new
+                if price_row:
+                    pts = str(price_row["ts"])
+                    if pts != last_price_ts:
+                        last_price_ts = pts
+                        data = {
+                            "ts": pts,
+                            "market_id": price_row["market_id"],
+                            "question": price_row["question"] or "",
+                            "category": price_row["category"] or "",
+                            "mid": float(price_row["mid"]) if price_row["mid"] else None,
+                            "bid": float(price_row["bid"]) if price_row["bid"] else None,
+                            "ask": float(price_row["ask"]) if price_row["ask"] else None,
+                        }
+                        yield f"event: price_tick\ndata: {json.dumps(data)}\n\n"
 
-            # Emit fair value if new
-            if fv_row:
-                fts = str(fv_row["ts"])
-                if fts != last_fv_ts:
-                    last_fv_ts = fts
-                    data = {
-                        "ts": fts,
-                        "strategy_id": fv_row["strategy_id"],
-                        "market_id": fv_row["market_id"],
-                        "question": fv_row["question"] or "",
-                        "edge_cents": float(fv_row["edge_cents"]),
-                        "confidence": float(fv_row["confidence"]),
-                        "model_prob": float(fv_row["model_prob"]),
-                        "market_prob": float(fv_row["market_prob"]),
-                    }
-                    yield f"event: new_signal\ndata: {json.dumps(data)}\n\n"
+                # Emit fair value if new
+                if fv_row:
+                    fts = str(fv_row["ts"])
+                    if fts != last_fv_ts:
+                        last_fv_ts = fts
+                        data = {
+                            "ts": fts,
+                            "strategy_id": fv_row["strategy_id"],
+                            "market_id": fv_row["market_id"],
+                            "question": fv_row["question"] or "",
+                            "edge_cents": float(fv_row["edge_cents"]),
+                            "confidence": float(fv_row["confidence"]),
+                            "model_prob": float(fv_row["model_prob"]),
+                            "market_prob": float(fv_row["market_prob"]),
+                        }
+                        yield f"event: new_signal\ndata: {json.dumps(data)}\n\n"
 
-            # Emit recommendation if new
-            if rec_row:
-                rid = int(rec_row["id"])
-                if last_rec_id is None or rid > last_rec_id:
-                    last_rec_id = rid
-                    data = {
-                        "id": rid,
-                        "market_id": rec_row["market_id"],
-                        "score": float(rec_row["score"]),
-                        "status": rec_row["status"],
-                        "strategy_id": rec_row["strategy_id"] or "",
-                    }
-                    yield f"event: recommendation_update\ndata: {json.dumps(data)}\n\n"
+                # Emit recommendation if new
+                if rec_row:
+                    rid = int(rec_row["id"])
+                    if last_rec_id is None or rid > last_rec_id:
+                        last_rec_id = rid
+                        data = {
+                            "id": rid,
+                            "market_id": rec_row["market_id"],
+                            "score": float(rec_row["score"]),
+                            "status": rec_row["status"],
+                            "strategy_id": rec_row["strategy_id"] or "",
+                        }
+                        yield f"event: recommendation_update\ndata: {json.dumps(data)}\n\n"
 
-            # Always emit stats as heartbeat
-            yield f"event: pipeline_status\ndata: {json.dumps(stats)}\n\n"
+                # Always emit stats as heartbeat
+                yield f"event: pipeline_status\ndata: {json.dumps(stats)}\n\n"
 
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            yield f"event: error\ndata: {json.dumps({'msg': 'db_poll_failed'})}\n\n"
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                yield f"event: error\ndata: {json.dumps({'msg': 'db_poll_failed'})}\n\n"
 
-        await asyncio.sleep(2.0)
+            await asyncio.sleep(2.0)
 
 
 @app.get("/events")
-async def sse_events():
+async def sse_events(request: Request):
     """Server-Sent Events endpoint for real-time dashboard updates."""
     return StreamingResponse(
-        _sse_generator(),
+        _sse_generator(request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -655,37 +685,62 @@ async def sse_events():
 
 @app.get("/api/pnl")
 async def pnl_data() -> dict[str, Any]:
-    """Return P&L summary for resolved approved recommendations."""
+    """Return P&L summary for resolved approved recommendations.
+
+    Deduplicated: each (market_id, strategy_id) counts as ONE position.
+    Uses the first recommendation per position (earliest entry).
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Deduplicate: one row per (market_id, strategy_id), keep first entry
         rows = await conn.fetch(
             """
-            SELECT id, market_id, resolved_at, pnl_cents, edge_direction,
-                   entry_price, resolved_outcome, strategy_id, score
-            FROM recommendations
-            WHERE pnl_cents IS NOT NULL
-            ORDER BY resolved_at ASC
+            WITH deduped AS (
+              SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
+                id, market_id, resolved_at, pnl_cents, edge_direction,
+                entry_price, resolved_outcome, strategy_id, score
+              FROM recommendations
+              WHERE pnl_cents IS NOT NULL
+              ORDER BY market_id, COALESCE(strategy_id, ''), id ASC
+            )
+            SELECT * FROM deduped ORDER BY resolved_at ASC
             """
         )
-        # Summary stats
-        total_pnl = await conn.fetchval(
-            "SELECT COALESCE(SUM(pnl_cents), 0) FROM recommendations WHERE pnl_cents IS NOT NULL"
+        # Summary stats (deduplicated)
+        summary = await conn.fetchrow(
+            """
+            WITH deduped AS (
+              SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
+                pnl_cents, strategy_id
+              FROM recommendations
+              WHERE pnl_cents IS NOT NULL
+              ORDER BY market_id, COALESCE(strategy_id, ''), id ASC
+            )
+            SELECT COALESCE(SUM(pnl_cents), 0) AS total_pnl,
+                   COUNT(*) AS total_resolved,
+                   COUNT(*) FILTER (WHERE pnl_cents > 0) AS wins
+            FROM deduped
+            """
         )
-        total_resolved = await conn.fetchval(
-            "SELECT COUNT(*) FROM recommendations WHERE pnl_cents IS NOT NULL"
-        )
-        wins = await conn.fetchval(
-            "SELECT COUNT(*) FROM recommendations WHERE pnl_cents IS NOT NULL AND pnl_cents > 0"
-        )
-        # Per-strategy breakdown
+        total_pnl = float(summary["total_pnl"])
+        total_resolved = int(summary["total_resolved"])
+        wins = int(summary["wins"])
+
+        # Per-strategy breakdown (deduplicated)
         strategy_rows = await conn.fetch(
             """
+            WITH deduped AS (
+              SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
+                pnl_cents, strategy_id
+              FROM recommendations
+              WHERE pnl_cents IS NOT NULL
+              ORDER BY market_id, COALESCE(strategy_id, ''), id ASC
+            )
             SELECT strategy_id,
                    COUNT(*) AS n,
                    SUM(pnl_cents) AS total_pnl,
                    COUNT(*) FILTER (WHERE pnl_cents > 0) AS wins
-            FROM recommendations
-            WHERE pnl_cents IS NOT NULL
+            FROM deduped
             GROUP BY strategy_id
             """
         )
@@ -716,9 +771,9 @@ async def pnl_data() -> dict[str, Any]:
 
     return {
         "total_pnl_cents": round(float(total_pnl), 2),
-        "total_resolved": int(total_resolved),
-        "wins": int(wins),
-        "win_rate": round(int(wins) / int(total_resolved), 3) if int(total_resolved) > 0 else 0,
+        "total_resolved": total_resolved,
+        "wins": wins,
+        "win_rate": round(wins / total_resolved, 3) if total_resolved > 0 else 0,
         "cumulative": cumulative,
         "strategies": strategies,
     }
@@ -902,6 +957,233 @@ async def calibration_data() -> dict[str, Any]:
         strategies[sid] = strat_buckets
 
     return {"has_data": True, "buckets": buckets, "strategies": strategies}
+
+
+# ---------- Full Analytics API ----------
+
+
+@app.get("/api/analytics")
+async def analytics_data() -> dict[str, Any]:
+    """Comprehensive analytics: every trade, breakdowns by strategy/sport/market-type, P&L."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Deduplicated: one row per (market_id, strategy_id) position.
+        # Keeps the FIRST recommendation (earliest entry) per position.
+        rows = await conn.fetch(
+            """
+            WITH deduped AS (
+              SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
+                id, ts, market_id, strategy_id, score, status,
+                pnl_cents, resolved_outcome, entry_price, edge_direction,
+                resolved_at, payload_json, question, category, market_type
+              FROM recommendations
+              ORDER BY market_id, COALESCE(strategy_id, ''), id ASC
+            )
+            SELECT d.id, d.ts, d.market_id, d.strategy_id, d.score, d.status,
+                   d.pnl_cents, d.resolved_outcome, d.entry_price, d.edge_direction,
+                   d.resolved_at, d.payload_json,
+                   COALESCE(d.question, m.question) AS question,
+                   COALESCE(d.category, m.category) AS category,
+                   d.market_type,
+                   lp.mid AS current_mid
+            FROM deduped d
+            JOIN markets m ON m.id = d.market_id
+            LEFT JOIN LATERAL (
+              SELECT mid FROM prices
+              WHERE market_id = d.market_id AND mid IS NOT NULL
+              ORDER BY ts DESC LIMIT 1
+            ) lp ON true
+            ORDER BY d.ts DESC
+            LIMIT 2000
+            """
+        )
+
+    from ploy_agent.common.market_type import classify_market_type, classify_sport_category
+
+    trades: list[dict[str, Any]] = []
+    resolved_trades: list[dict[str, Any]] = []
+    by_strategy: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, dict[str, Any]] = {}
+    by_market_type: dict[str, dict[str, Any]] = {}
+    total_pnl = 0.0
+    total_unrealized = 0.0
+    total_open = 0
+    total_resolved = 0
+    total_wins = 0
+    total_losses = 0
+    biggest_win = 0.0
+    biggest_loss = 0.0
+    current_streak = 0
+    streak_type = ""
+    streak_locked = False  # once the streak direction changes, stop counting
+    total_capital_deployed = 0.0  # sum of capital risked across all trades
+
+    for r in rows:
+        pj = r["payload_json"] or {}
+        if isinstance(pj, str):
+            import json as _json
+            pj = _json.loads(pj)
+
+        q = r["question"] or ""
+        cat = classify_sport_category(r["category"], q)
+        mt = r["market_type"] or classify_market_type(q)
+        edge = float(pj.get("edge_cents", 0))
+        pnl = float(r["pnl_cents"]) if r["pnl_cents"] is not None else None
+        outcome = r["resolved_outcome"]
+        is_resolved = pnl is not None
+
+        # $1 per trade P&L
+        pnl_dollars = round(pnl / 100, 4) if pnl is not None else None
+
+        # Capital deployed per trade: BUY pays entry_price, SELL pays (1-entry_price)
+        entry = float(r["entry_price"]) if r.get("entry_price") else None
+        if entry is not None:
+            capital_cents = entry * 100 if edge >= 0 else (1.0 - entry) * 100
+            capital_dollars = round(capital_cents / 100, 4)
+        else:
+            capital_cents = 0.0
+            capital_dollars = 0.0
+        total_capital_deployed += capital_dollars
+
+        # Unrealized P&L: compare entry to current mid
+        unrealized = None
+        current_mid = float(r["current_mid"]) if r.get("current_mid") is not None else None
+        if current_mid is not None and entry is not None and pnl is None:
+            if edge >= 0:  # BUY
+                unrealized = round((current_mid - entry) * 100, 2)
+            else:  # SELL
+                unrealized = round((entry - current_mid) * 100, 2)
+
+        trade = {
+            "id": int(r["id"]),
+            "ts": str(r["ts"]),
+            "market_id": r["market_id"],
+            "question": q[:200],
+            "strategy_id": r["strategy_id"] or "",
+            "category": cat,
+            "market_type": mt,
+            "status": r["status"],
+            "direction": "BUY" if edge >= 0 else "SELL",
+            "edge_cents": round(edge, 2),
+            "model_prob": pj.get("model_prob"),
+            "market_prob": pj.get("market_prob"),
+            "confidence": pj.get("confidence"),
+            "entry_price": float(r["entry_price"]) if r["entry_price"] else None,
+            "resolved_outcome": outcome,
+            "pnl_cents": round(pnl, 2) if pnl is not None else None,
+            "pnl_dollars": pnl_dollars,
+            "unrealized_pnl_cents": unrealized,
+            "current_mid": current_mid,
+            "resolved_at": str(r["resolved_at"]) if r["resolved_at"] else None,
+            "correct": (pnl > 0) if pnl is not None else None,
+            "score": round(float(r["score"]), 2) if r["score"] else 0,
+            "capital_cents": round(capital_cents, 2),
+            "capital_dollars": capital_dollars,
+            "roi_pct": round(pnl / capital_cents * 100, 1) if pnl is not None and capital_cents > 0 else None,
+        }
+        trades.append(trade)
+
+        # Track unrealized P&L for open positions
+        if unrealized is not None:
+            total_unrealized += unrealized
+            total_open += 1
+
+        if not is_resolved:
+            continue
+
+        resolved_trades.append(trade)
+        total_resolved += 1
+        total_pnl += pnl
+        is_win = pnl > 0
+        if is_win:
+            total_wins += 1
+            biggest_win = max(biggest_win, pnl)
+        else:
+            total_losses += 1
+            biggest_loss = min(biggest_loss, pnl)
+
+        # Streak tracking (resolved trades are newest-first)
+        if not streak_locked:
+            if total_resolved == 1:
+                streak_type = "win" if is_win else "loss"
+                current_streak = 1
+            elif (is_win and streak_type == "win") or (not is_win and streak_type == "loss"):
+                current_streak += 1
+            else:
+                streak_locked = True  # direction changed, freeze the streak
+
+        # Strategy breakdown
+        sid = r["strategy_id"] or "unknown"
+        s = by_strategy.setdefault(sid, {"n": 0, "wins": 0, "pnl": 0.0, "trades": []})
+        s["n"] += 1
+        s["pnl"] += pnl
+        if is_win:
+            s["wins"] += 1
+
+        # Category breakdown
+        c = by_category.setdefault(cat, {"n": 0, "wins": 0, "pnl": 0.0})
+        c["n"] += 1
+        c["pnl"] += pnl
+        if is_win:
+            c["wins"] += 1
+
+        # Market type breakdown
+        m = by_market_type.setdefault(mt, {"n": 0, "wins": 0, "pnl": 0.0})
+        m["n"] += 1
+        m["pnl"] += pnl
+        if is_win:
+            m["wins"] += 1
+
+    def _breakdown(d: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for key, v in sorted(d.items(), key=lambda x: x[1]["pnl"], reverse=True):
+            n = v["n"]
+            out.append({
+                "key": key,
+                "trades": n,
+                "wins": v["wins"],
+                "losses": n - v["wins"],
+                "win_rate": round(v["wins"] / n * 100, 1) if n else 0,
+                "pnl_cents": round(v["pnl"], 2),
+                "pnl_dollars": round(v["pnl"] / 100, 2),
+                "avg_pnl_cents": round(v["pnl"] / n, 2) if n else 0,
+            })
+        return out
+
+    win_rate = round(total_wins / total_resolved * 100, 1) if total_resolved else 0
+
+    return {
+        "overview": {
+            "total_recommendations": len(trades),
+            "total_resolved": total_resolved,
+            "total_pending": len(trades) - total_resolved,
+            "wins": total_wins,
+            "losses": total_losses,
+            "win_rate": win_rate,
+            "total_pnl_cents": round(total_pnl, 2),
+            "total_pnl_dollars": round(total_pnl / 100, 2),
+            "avg_pnl_cents": round(total_pnl / total_resolved, 2) if total_resolved else 0,
+            "biggest_win_cents": round(biggest_win, 2),
+            "biggest_loss_cents": round(biggest_loss, 2),
+            "current_streak": current_streak,
+            "streak_type": streak_type,
+            "open_positions": total_open,
+            "unrealized_pnl_cents": round(total_unrealized, 2),
+            "unrealized_pnl_dollars": round(total_unrealized / 100, 2),
+            "total_capital_deployed": round(total_capital_deployed, 2),
+            "roi_pct": round(total_pnl / (total_capital_deployed * 100) * 100, 1) if total_capital_deployed > 0 else 0,
+        },
+        "by_strategy": _breakdown(by_strategy),
+        "by_category": _breakdown(by_category),
+        "by_market_type": _breakdown(by_market_type),
+        "trades": trades[:500],
+        "resolved_trades": resolved_trades[:200],
+    }
+
+
+@app.get("/analytics", response_class=HTMLResponse)
+async def analytics_page(request: Request) -> Any:
+    return templates.TemplateResponse(request, "analytics.html", {})
 
 
 def run() -> None:

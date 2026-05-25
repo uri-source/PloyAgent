@@ -86,7 +86,23 @@ class Settings(BaseSettings):
 
     player_adjust_scale: float = Field(default=0.004, alias="PLAYER_ADJUST_SCALE")
 
-    min_edge_cents: float = Field(default=3.0, alias="MIN_EDGE_CENTS")
+    auto_approve_recs: bool = Field(
+        default=True, alias="AUTO_APPROVE_RECS",
+        description="Auto-approve recommendations (no human gate, for paper trading / testing)",
+    )
+    min_edge_cents: float = Field(default=5.0, alias="MIN_EDGE_CENTS")
+    entry_price_min: float = Field(
+        default=0.35, alias="ENTRY_PRICE_MIN",
+        description="Reject trades where market_prob < this (risk/reward floor)",
+    )
+    entry_price_max: float = Field(
+        default=0.65, alias="ENTRY_PRICE_MAX",
+        description="Reject trades where market_prob > this (risk/reward ceiling)",
+    )
+    min_risk_reward: float = Field(
+        default=0.30, alias="MIN_RISK_REWARD",
+        description="Hard floor on risk_reward_factor — reject trades below this",
+    )
     rank_top_n: int = Field(default=5, alias="RANK_TOP_N")
     rank_merge_by_market: bool = Field(default=False, alias="RANK_MERGE_BY_MARKET")
 
@@ -128,6 +144,7 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = Field(default="", alias="SLACK_BOT_TOKEN")
     slack_channel: str = Field(default="", alias="SLACK_CHANNEL")
+    slack_signing_secret: str = Field(default="", alias="SLACK_SIGNING_SECRET")
     slack_events_port: int = Field(default=8766, alias="SLACK_EVENTS_PORT")
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")

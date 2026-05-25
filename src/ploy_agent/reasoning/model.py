@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Any
+
+
+def _word_in(needle: str, haystack: str) -> bool:
+    """Check if needle appears as a whole word (or at a word boundary) in haystack."""
+    if not needle:
+        return False
+    return bool(re.search(r'\b' + re.escape(needle) + r'\b', haystack, re.IGNORECASE))
 
 
 def _sigmoid(z: float) -> float:
@@ -35,15 +43,20 @@ def predict_home_win_prob(
     diff = float(home_score - away_score)
     reg = float(model.get("regulation_seconds") or 2880)
     period_n = int(period or 1)
-    # Quarter-based elapsed fraction: Q1=0.0, Q2=0.25, Q3=0.5, Q4=0.75, OT=1.0
-    elapsed_frac = min(1.0, max(0.0, (period_n - 1) / 4.0))
-    remaining = reg * (1.0 - elapsed_frac)
+    # Quarter-based elapsed fraction: Q1=0.0, Q2=0.25, Q3=0.5, Q4=0.75
+    if period_n <= 4:
+        elapsed_frac = max(0.0, (period_n - 1) / 4.0)
+        remaining = reg * (1.0 - elapsed_frac)
+    else:
+        # OT: treat as small remaining time (5-min OT = 300s)
+        ot_seconds = 300.0
+        remaining = ot_seconds
     poss = 0.0
     if possession:
         pl = possession.lower()
-        if home_team.lower() in pl:
+        if _word_in(home_team, pl):
             poss = 1.0
-        elif away_team.lower() in pl:
+        elif _word_in(away_team, pl):
             poss = -1.0
     z = float(model.get("intercept", 0.0))
     # Use raw diff — normalizing by total score overweights early-game leads
@@ -68,12 +81,14 @@ def align_prob_to_yes(
     if " beat " in q:
         before = q.split(" beat ", 1)[0]
         tail = " ".join(before.strip().split()[-3:]).lower()
-        if ht in tail:
+        if _word_in(ht, tail):
             return p_home_wins
-        if at in tail:
+        if _word_in(at, tail):
             return 1.0 - p_home_wins
-    hi = q.find(ht)
-    ai = q.find(at)
+    h_match = re.search(r'\b' + re.escape(ht) + r'\b', q)
+    a_match = re.search(r'\b' + re.escape(at) + r'\b', q)
+    hi = h_match.start() if h_match else -1
+    ai = a_match.start() if a_match else -1
     if hi >= 0 and (ai < 0 or hi <= ai):
         return p_home_wins
     if ai >= 0:

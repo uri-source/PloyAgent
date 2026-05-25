@@ -19,6 +19,16 @@ def compute_pnl_cents(
     return (entry_price * 100.0) if outcome == 0 else (-(1.0 - entry_price) * 100.0)
 
 
+def mtm_pnl_cents(
+    entry_price: float,
+    exit_price: float,
+    direction: str,
+) -> float:
+    if direction == "buy":
+        return (exit_price - entry_price) * 100.0
+    return (entry_price - exit_price) * 100.0
+
+
 def outcome_from_final_mid(mid: float) -> int | None:
     if mid > 0.9:
         return 1

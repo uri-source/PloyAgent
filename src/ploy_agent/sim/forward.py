@@ -105,16 +105,22 @@ async def forward_tick(
     )
 
     for sig in signals:
+        resolved = sig.market_id in outcomes
         for pf in portfolios.values():
+            key = (pf.profile.id, sig.market_id)
+
+            # Skip opening new positions on already-resolved markets
+            if resolved and key not in pf.state.open_by_key:
+                continue
+
             closed = pf.process_signal(
                 sig,
-                market_resolved=sig.market_id in outcomes,
+                market_resolved=resolved,
                 resolved_outcome=outcomes.get(sig.market_id),
             )
             for ct in closed:
                 await sim_repo.close_trade(conn, ct)
 
-            key = (pf.profile.id, sig.market_id)
             pos = pf.state.open_by_key.get(key)
             if pos is not None and pos.trade_id is None:
                 tid = await sim_repo.insert_open_trade(conn, run_id, pos)

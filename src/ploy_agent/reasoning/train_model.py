@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,13 @@ import asyncpg
 import numpy as np
 
 from ploy_agent.common.config import settings
+
+
+def _word_in_train(needle: str, haystack: str) -> bool:
+    """Word-boundary match — mirrors model.py _word_in for train/serve parity."""
+    if not needle:
+        return False
+    return bool(re.search(r'\b' + re.escape(needle) + r'\b', haystack, re.IGNORECASE))
 
 
 async def _fetch_training_data(database_url: str) -> list[dict[str, Any]]:
@@ -89,16 +97,20 @@ def _build_features(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]
     """Build feature matrix matching predict_home_win_prob runtime features."""
     X_list = []
     y_list = []
-    reg = 2880.0  # regulation seconds
 
     for r in rows:
         hs = int(r["home_score"] or 0)
         as_ = int(r["away_score"] or 0)
         diff = float(hs - as_)
         period_n = int(r["period"] or 1)
-        # Match runtime: elapsed_frac = (period - 1) / 4, clamped [0, 1]
-        elapsed_frac = min(1.0, max(0.0, (period_n - 1) / 4.0))
-        remaining_ratio = 1.0 - elapsed_frac
+        # Match runtime model.py: Q1-Q4 use elapsed_frac, OT uses 300s
+        reg_sec = 2880.0
+        if period_n <= 4:
+            elapsed_frac = max(0.0, (period_n - 1) / 4.0)
+            remaining = reg_sec * (1.0 - elapsed_frac)
+        else:
+            remaining = 300.0  # OT = 5 min
+        remaining_ratio = remaining / reg_sec
 
         poss = 0.0
         possession = r.get("possession")
@@ -106,9 +118,9 @@ def _build_features(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]
         away_team = str(r.get("away_team") or "").lower()
         if possession:
             pl = str(possession).lower()
-            if home_team and home_team in pl:
+            if home_team and _word_in_train(home_team, pl):
                 poss = 1.0
-            elif away_team and away_team in pl:
+            elif away_team and _word_in_train(away_team, pl):
                 poss = -1.0
 
         # Features: raw diff (not normalized), remaining_ratio, possession

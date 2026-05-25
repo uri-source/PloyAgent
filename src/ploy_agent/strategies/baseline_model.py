@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import ClassVar
 
 from ploy_agent.common.config import settings
@@ -26,9 +25,9 @@ class BaselineModelStrategy(Strategy):
         mid = ctx.mid
         p_home = predict_home_win_prob(
             ctx.model,
-            home_score=int(gs["home_score"] or 0),
-            away_score=int(gs["away_score"] or 0),
-            period=int(gs["period"] or 0) or None,
+            home_score=int(gs.get("home_score") or 0),
+            away_score=int(gs.get("away_score") or 0),
+            period=int(gs.get("period") or 0) or None,
             possession=gs.get("possession"),
             home_team=home_team,
             away_team=away_team,
@@ -48,8 +47,7 @@ class BaselineModelStrategy(Strategy):
             f"{away_team}@{home_team} {gs.get('away_score')}-{gs.get('home_score')} "
             f"P{gs.get('period')} poss={gs.get('possession')}"
         )
-        conf, reasoning, sources = await asyncio.to_thread(
-            confidence_and_reasoning,
+        conf, reasoning, sources = await confidence_and_reasoning(
             question=ctx.mrow.get("question"),
             model_prob=p_yes,
             market_prob=mid,

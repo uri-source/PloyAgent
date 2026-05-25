@@ -2,14 +2,15 @@
 
 ## Project Overview
 
-Multi-sport Polymarket edge-detection agent. Five decoupled async Python services ingest live
+Multi-sport Polymarket edge-detection agent. Six decoupled async Python services ingest live
 market data, enrich with game state (NBA, MLB, NFL, NHL, WNBA), compute fair value via
-statistical models + optional LLM confidence, and surface ranked recommendations via Slack
+statistical models + optional LLM confidence, and surface ranked recommendations via Slack/Telegram
 with human approve/reject buttons. **No automated trading — recommendations only.**
-All data lives in TimescaleDB.
+All data lives in TimescaleDB; persists across restarts via Docker volume.
 
-**Current state:** Fully operational. Pipeline running, Slack notifications live, 7 strategies
-active, real-time SSE dashboard with P&L tracking and calibration curves.
+**Current state:** Fully operational. Pipeline running, Slack + Telegram notifications live,
+8 strategies active, real-time SSE dashboard with P&L tracking, calibration curves, analytics
+with capital deployed / ROI, and paper-trading simulation with 12 threshold profiles.
 
 ---
 
@@ -19,7 +20,8 @@ active, real-time SSE dashboard with P&L tracking and calibration curves.
 Polymarket WS/REST ──► ingestion   ──► prices, order_book_snapshots
 ESPN / Odds API    ──► enrichment  ──► game_state
                        reasoning   ──► fair_values        (parallel eval, 8 markets concurrently)
-                       notifier    ──► recommendations     (5s tick, smart dedup, alert filters)
+                       notifier    ──► recommendations     (5s tick, position-level dedup, alerts)
+                       sim-forward ──► sim_trades          (paper trading across profiles)
                        web (FastAPI)◄── reads all tables   (dashboard + SSE at :8765)
                        slack-events ◄── Slack buttons      (approve/reject at :8766)
 ```
@@ -34,13 +36,13 @@ only through the database — no message broker, no shared memory.
 | `ploy-ingest` | `ingestion/__main__.py` | Polymarket WS listener + REST backfill |
 | `ploy-enrich` | `enrichment/__main__.py` | Multi-sport game state poller (ESPN/Odds API) |
 | `ploy-reason` | `reasoning/__main__.py` | Win-prob model + confidence (parallel, sem=8) |
-| `ploy-notify` | `notifier/__main__.py` | Composite scorer, Slack posting, P&L resolution |
-| `ploy-web` | `web/app.py` | FastAPI dashboard + SSE + accuracy/calibration APIs |
+| `ploy-notify` | `notifier/__main__.py` | Composite scorer, Slack/Telegram posting, P&L resolution |
+| `ploy-web` | `web/app.py` | FastAPI dashboard + SSE + analytics/accuracy/calibration APIs |
 | `ploy-slack-events` | `notifier/slack_events.py` | Slack button click listener (port 8766) |
+| `ploy-sim` | `sim/__main__.py` | Paper-trading simulation across threshold profiles |
 | `ploy-migrate` | `db/migrate.py` | Run all SQL migrations in order |
 | `ploy-train-model` | `reasoning/train_model.py` | Retrain logistic regression from DB data |
 | `ploy-backtest` | `backtest/__main__.py` | Full backtest: Brier, calibration, P&L sim |
-| `ploy-sim` | `sim/__main__.py` | Paper-trading simulation across threshold profiles |
 
 ---
 
@@ -49,7 +51,7 @@ only through the database — no message broker, no shared memory.
 ### Option A: Docker Compose (recommended)
 ```bash
 cp .env.example .env   # Edit: add SLACK_BOT_TOKEN, SLACK_CHANNEL
-docker compose up -d   # Starts TimescaleDB + all 7 services
+docker compose up -d   # Starts TimescaleDB + all 8 services
 # Dashboard: http://localhost:8765
 ```
 
@@ -88,7 +90,7 @@ Line length: **100**. Target: **py311**.
 
 ### Tests
 ```bash
-pytest                          # all 54 tests
+pytest                          # all tests
 pytest tests/test_model.py     # single file
 ```
 `asyncio_mode = "auto"` — all async tests just work with `async def test_*`.
@@ -120,15 +122,22 @@ from ploy_agent.common.config import settings
 | `POLY_GAMMA_TAGS` | _(empty)_ | Comma-separated Gamma tags for market discovery |
 | `MIN_EDGE_CENTS` | `3.0` | Floor — covers 2% fee + spread |
 | `RANK_TOP_N` | `5` | Recommendations persisted per notifier tick |
+| `AUTO_APPROVE_RECS` | `true` | Skip human approval; entry_price set at signal time |
 | `SLACK_BOT_TOKEN` | _(empty)_ | Required for Slack alerts |
 | `SLACK_CHANNEL` | _(empty)_ | Channel ID to post picks to |
-| `ALERT_MIN_EDGE` | `0` | Min edge for Slack alerts (0 = use MIN_EDGE_CENTS) |
+| `TELEGRAM_BOT_TOKEN` | _(empty)_ | Required for Telegram alerts |
+| `TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat to post picks to |
+| `ALERT_MIN_EDGE` | `0` | Min edge for alerts (0 = use MIN_EDGE_CENTS) |
 | `ALERT_MIN_DEPTH` | `0` | Min depth_1c for alerts |
 | `ALERT_MIN_SCORE` | `0` | Min composite score for alerts |
+| `SIM_FORWARD_RUN_HOURS` | `336` | Forward sim auto-stop (0 = unlimited) |
+| `SIM_FORWARD_INTERVAL_SEC` | `5` | Forward loop tick interval |
 
 ---
 
 ## Data Model
+
+Seven primary tables + supporting tables in TimescaleDB.
 
 ```
 markets               — market metadata (one row per Polymarket market)
@@ -137,6 +146,9 @@ order_book_snapshots  — full book snapshots every 30s + per-trade (hypertable 
 game_state            — multi-sport game state polled every 10s (hypertable on ts)
 fair_values           — model output per reasoning tick (hypertable on ts)
 recommendations       — ranked picks (status: pending/approved/rejected, P&L tracking)
+sim_trades            — paper-trading positions per sim profile
+sim_profiles          — threshold configurations for paper trading
+sim_runs              — replay/forward run metadata
 market_game_map       — joins market_id → game_id (used by enrichment)
 market_resolution_cache — LLM resolution safety gate cache
 ```
@@ -144,7 +156,7 @@ market_resolution_cache — LLM resolution safety gate cache
 **Hypertables** (TimescaleDB partitioned by time): `prices`, `order_book_snapshots`,
 `game_state`, `fair_values`. Always include a `ts DESC` index when querying these.
 
-Migrations live in `src/ploy_agent/db/migrations/` numbered sequentially (`001_`, `002_`, ...).
+Migrations live in `src/ploy_agent/db/migrations/` numbered sequentially (`001_` through `006_`).
 **Always add new columns or tables via a new numbered migration file.** Never alter existing
 migration files — `ploy-migrate` is idempotent but detects conflicts.
 
@@ -180,6 +192,7 @@ class Strategy(ABC):
 | `cross_market_arb` | — | Flags complementary markets that don't sum to 1.0 (binary + multi-outcome) |
 | `behavior_fade` | — | Fades overreaction moves (price spike > threshold in short window) |
 | `player_adjust` | — | Adjusts probability for key player foul/injury signals |
+| `book_imbalance` | — | Detects directional order flow imbalance in the L2 book |
 | `consensus` | — | Ensemble: boosts signal when 2+ strategies agree on direction (**must be last**) |
 
 **To add a strategy:** create `src/ploy_agent/strategies/my_strategy.py`, implement `Strategy`,
@@ -204,10 +217,48 @@ edge_cents = (model_prob - market_mid) * 100
 
 ### Composite score (ranking)
 ```python
-score = abs(edge_cents) * log(1 + depth_1c) * confidence * time_factor
+score = abs(edge_cents) * log(1 + depth_1c) * confidence * time_factor * risk_reward
 time_factor = 1 / (1 + hours_to_resolution)
+risk_reward = sqrt(win_payout / loss_payout), clamped [0.15, 1.0]
 ```
 Implementation: `src/ploy_agent/common/scoring.py`. Do not inline this formula elsewhere.
+
+The **risk-reward factor** penalizes trades with asymmetric downside. For a BUY at 0.85,
+win pays 15¢ but loss costs 85¢ — risk_reward = sqrt(15/85) ≈ 0.42, heavily discounting
+the score even if edge is positive. This prevents the system from recommending high-confidence
+but lopsided trades.
+
+### Fair value decay
+`common/fair_value_decay.py` — stale signals lose strength over time. A fair value computed
+30 minutes ago is worth less than a fresh one. The decay factor multiplies `edge_cents` before
+scoring. Used in `notifier/rank.py` when selecting top picks.
+
+### Kelly fraction
+`common/kelly.py` — display-only Kelly sizing for position sizing context. Shows what fraction
+of bankroll a Kelly bettor would allocate. Not used for execution (no trading), but visible
+in the dashboard for educational value.
+
+### Adaptive edge threshold
+`common/adaptive_edge.py` — dynamically adjusts the minimum edge threshold based on recent
+recommendation accuracy. If the system is performing well, the threshold tightens; if poorly,
+it loosens. Used as a floor for alert filtering in the notifier.
+
+### P&L tracking
+Binary market P&L computed in `common/pnl.py`:
+- **BUY** at price p: win (outcome=1) pays `(1-p)*100¢`, loss pays `-p*100¢`
+- **SELL** at price p: win (outcome=0) pays `p*100¢`, loss pays `-(1-p)*100¢`
+- **Mark-to-market** (non-resolution close): `(exit - entry) * 100` for BUY, inverse for SELL
+
+Resolution triggers in `notifier/__main__.py::_resolve_pnl()`:
+1. Market status is `'closed'` in DB
+2. Market `end_date` is past AND final price is near 0 or 1 (>0.9 or <0.1)
+
+Entry price: set from `payload.market_prob` at signal generation time (NOT latest market price).
+
+### Recommendation deduplication
+Each (market_id, strategy_id) is ONE position. The notifier checks for ANY unresolved
+recommendation before creating a new row. Dashboard queries also deduplicate — each position
+counted once for P&L, win rate, and capital deployed calculations.
 
 ### Statistical confidence (no-LLM mode)
 `common/confidence.py` — weighted 5-factor score:
@@ -247,9 +298,10 @@ Coefficients stored in `reasoning/default_model.json`. Retrain with `ploy-train-
 
 ### Notifier behavior
 - **5-second tick** — near real-time notifications
-- **Smart dedup** — 15-min cooldown per market, but re-alerts if edge doubles
+- **Position-level dedup** — one recommendation per (market, strategy) until resolved
+- **Re-alert on edge doubling** — if edge doubles and exceeds 2× MIN_EDGE, re-notify
 - **Alert filters** — `ALERT_MIN_EDGE`, `ALERT_MIN_DEPTH`, `ALERT_MIN_SCORE` drop weak picks
-- **P&L resolution** — detects closed markets, computes hypothetical profit/loss
+- **P&L resolution** — detects closed/expired markets, computes hypothetical profit/loss
 - **Slack thread replies** — posts outcome + P&L as thread reply to original alert
 
 ### WebSocket reconnect
@@ -280,10 +332,12 @@ no state is persisted in memory across reconnects.
 
 The web dashboard at `:8765` includes:
 - Pipeline status (service health from DB freshness)
-- Current ranked edges (top picks)
+- Current ranked edges (top picks with Kelly fraction, decay, risk-reward)
 - Price ticks, game state, fair values, recommendation history
 - **Real-time SSE** (`/events`) — live feed of price ticks, signals, recommendations
-- **P&L tracking** (`/api/pnl`) — cumulative profit/loss, per-strategy breakdown
+- **P&L tracking** (`/api/pnl`) — deduplicated cumulative P&L, per-strategy breakdown
+- **Analytics** (`/api/analytics`) — every trade with capital deployed, ROI%, closed deals list,
+  breakdowns by strategy/category/market-type, streak tracking
 - **Accuracy** (`/api/accuracy`) — per-strategy Brier scores vs resolved outcomes
 - **Calibration** (`/api/calibration`) — predicted vs actual bucketed curve
 - **Simulation** (`/api/sim/*`) — paper-trading P&L by threshold profile, per-market best fit
@@ -292,7 +346,9 @@ The web dashboard at `:8765` includes:
 
 ## Paper-trading simulation (`ploy-sim`)
 
-One `ploy-reason` pipeline writes `fair_values`; many **sim profiles** (edge × confidence × model_prob thresholds) read the same data — do not run separate ingest/reason stacks per threshold.
+One `ploy-reason` pipeline writes `fair_values`; many **sim profiles** (edge × confidence ×
+model_prob thresholds) read the same data — do not run separate ingest/reason stacks per
+threshold. The `sim-forward` service runs as a Docker container alongside other services.
 
 ### Setup
 ```bash
@@ -308,6 +364,15 @@ ploy-sim forward                # live paper trading (alongside ploy-reason)
 - **BUY:** `edge_cents >= min_edge`, `confidence >= min_confidence`, `model_prob >= min_model_prob`
 - **SELL:** `edge_cents <= -min_edge`, same confidence, `(1 - model_prob) >= min_model_prob`
 
+### Trade close reasons
+- **resolution** — market resolved (outcome known), binary P&L computed
+- **signal_reverse** — opposing signal detected, mark-to-market P&L
+- **forward_shutdown** — service stopped, positions closed at final mid price
+- **mark_to_market** — replay end, positions closed at current price
+
+All close types compute P&L: resolution uses binary payoff, others use mark-to-market
+`(exit_price - entry_price) * 100` for BUY, inverse for SELL.
+
 ### How long to run (defaults)
 | Mode | Default | Env | Success criteria |
 |------|---------|-----|------------------|
@@ -318,12 +383,8 @@ ploy-sim forward                # live paper trading (alongside ploy-reason)
 Shorter smoke test: `ploy-sim forward --hours 48` or `ploy-sim replay --days 7`.
 
 ### Dashboard
-Open **Simulation (paper trading)** on the web UI. **Tracker:** `GET /api/sim/tracker` (forward run status, BUY/SELL counts, recent trades). Also `/api/sim/summary`, `/api/sim/series?profile_id=...`.
-
-### Config
-- `SIM_FORWARD_INTERVAL_SEC` (default 5) — forward loop tick interval
-- `SIM_FORWARD_RUN_HOURS` (default 336) — forward auto-stop; `0` = until manual stop
-- `SIM_REPLAY_DAYS` (default 14) — default `ploy-sim replay` window
+Open **Simulation (paper trading)** on the web UI. **Tracker:** `GET /api/sim/tracker` (forward
+run status, BUY/SELL counts, recent trades). Also `/api/sim/summary`, `/api/sim/series?profile_id=...`.
 
 ---
 
@@ -351,16 +412,21 @@ with cross-validation, and reports Brier score. Use `--update-default` to overwr
 ```bash
 docker compose up -d     # All services + TimescaleDB
 docker compose logs -f   # Tail all logs
-docker compose down      # Stop everything (data persists in volume)
+docker compose down      # Stop everything (data persists in tsdata volume)
+# NEVER use -v flag — it deletes the data volume
 ```
 
 The `docker-compose.yml` at project root includes:
-- `timescaledb` with healthcheck
+- `timescaledb` with healthcheck + `tsdata` named volume
 - `migrate` (runs once, then exits)
-- `ingest`, `enrich`, `reason`, `notify`, `web`, `slack-events` (restart: unless-stopped)
+- `ingest`, `enrich`, `reason`, `notify`, `web`, `slack-events`, `sim-forward`
 
 All services use `DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/ploy_agent`
 internally. The `.env` file is shared via `env_file`.
+
+**Common Docker issues:**
+- Container name conflicts: `docker rm -f polyagent-timescaledb-1` then retry
+- Build after code changes: `docker compose up -d --build`
 
 ---
 
@@ -414,18 +480,19 @@ outside of `repo.py` files or migration files.
 
 ```
 src/ploy_agent/
-  common/         config, db pool, logging, scoring, statistical confidence
+  common/         config, db pool, logging, scoring, pnl, kelly, confidence,
+                  adaptive_edge, fair_value_decay, market_type, odds_sports, ssl_utils
   ingestion/      Polymarket WS + REST, L2 book management
   enrichment/     ESPN / Odds API multi-sport data, market→game mapping
   reasoning/      win-prob model, Claude confidence, resolution gate, trainer
-  strategies/     Strategy ABC + 7 implementations + registry
-  notifier/       composite ranking, Slack posting, P&L resolution, smart dedup
-  web/            FastAPI dashboard + SSE + accuracy/calibration APIs
+  strategies/     Strategy ABC + 8 implementations + registry
+  notifier/       composite ranking, Slack/Telegram posting, P&L resolution, dedup
+  web/            FastAPI dashboard + SSE + analytics/accuracy/calibration APIs
   backtest/       full historical accuracy harness
-  sim/            paper-trading profiles, replay, forward, metrics
-  db/             migration runner + SQL files
+  sim/            paper-trading profiles, replay, forward, portfolio, metrics, tracker
+  db/             migration runner + 6 SQL migration files
 scripts/          start_all.sh, start_all.ps1
-tests/            54 unit tests (model, confidence, book_math, resolution, scoring, etc.)
+tests/            unit tests (model, confidence, book_math, resolution, scoring, etc.)
 ```
 
 ---
@@ -436,9 +503,7 @@ tests/            54 unit tests (model, confidence, book_math, resolution, scori
 - Test pure functions: scoring math, model predictions, odds math, resolution heuristics
 - For async service code, mock `asyncpg.Connection` and `httpx.AsyncClient`
 - Test file per module: `tests/test_<module>.py`
-- Run `pytest` before every PR — 54 tests, all must pass
-- Key test files: `test_model.py` (14), `test_confidence.py` (6), `test_book_math.py` (11),
-  `test_resolution.py` (8), `test_scoring.py` (4), `test_registry.py` (3)
+- Run `pytest` before every PR — all must pass
 
 ---
 
@@ -455,3 +520,8 @@ tests/            54 unit tests (model, confidence, book_math, resolution, scori
 6. **Consensus strategy runs last.** It reads fair_values from other strategies — ordering matters.
 7. **All strategies must check `MIN_EDGE_CENTS`.** Return `None` if `abs(edge) < threshold`.
 8. **No `os.environ` access.** All config through `settings` singleton.
+9. **One recommendation per position.** Dedup by (market_id, strategy_id) — never create
+   duplicate rows for the same open position.
+10. **Entry price from signal time.** Use `payload.market_prob`, never the latest market price
+    (which may have moved to 0/1 if the market already resolved).
+11. **Never `docker compose down -v`.** The `-v` flag deletes the TimescaleDB data volume.

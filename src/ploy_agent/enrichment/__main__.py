@@ -43,11 +43,13 @@ async def _tick(pool, client: httpx.AsyncClient) -> None:
 
             prev = await erepo.fetch_latest_scores(conn, gid)
             await upsert_market_game_map(conn, mid, gid)
+            h_score = game.home_score if game.home_score is not None else 0
+            a_score = game.away_score if game.away_score is not None else 0
             await insert_game_state(
                 conn,
                 game_id=gid,
-                home_score=game.home_score,
-                away_score=game.away_score,
+                home_score=h_score,
+                away_score=a_score,
                 period=game.period,
                 time_remaining=game.time_remaining,
                 possession=game.possession,
@@ -56,8 +58,8 @@ async def _tick(pool, client: httpx.AsyncClient) -> None:
             )
             if prev:
                 ph, pa = prev
-                dh = abs(game.home_score - ph)
-                da = abs(game.away_score - pa)
+                dh = abs(h_score - ph)
+                da = abs(a_score - pa)
                 if max(dh, da) >= settings.stale_quote_score_swing:
                     await rrepo.insert_game_event(
                         conn,
@@ -68,11 +70,11 @@ async def _tick(pool, client: httpx.AsyncClient) -> None:
                             "prev_away": pa,
                             "delta_home": dh,
                             "delta_away": da,
-                            "new_home": game.home_score,
-                            "new_away": game.away_score,
+                            "new_home": h_score,
+                            "new_away": a_score,
                         },
-                        home_score=game.home_score,
-                        away_score=game.away_score,
+                        home_score=h_score,
+                        away_score=a_score,
                     )
                     log.info("game_event_score_swing", game_id=gid, dh=dh, da=da)
 

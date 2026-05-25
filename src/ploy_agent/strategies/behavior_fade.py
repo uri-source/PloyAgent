@@ -58,9 +58,9 @@ class BehaviorFadeStrategy(Strategy):
         )
         p_after = predict_home_win_prob(
             ctx.model,
-            home_score=int(gs["home_score"] or 0),
-            away_score=int(gs["away_score"] or 0),
-            period=int(gs["period"] or 0) or None,
+            home_score=int(gs.get("home_score") or 0),
+            away_score=int(gs.get("away_score") or 0),
+            period=int(gs.get("period") or 0) or None,
             possession=gs.get("possession"),
             home_team=home_team,
             away_team=away_team,
@@ -87,6 +87,7 @@ class BehaviorFadeStrategy(Strategy):
 
         sign = 1.0 if price_delta >= 0 else -1.0
         fade_target = last_m - sign * min(abs(model_delta), 0.08)
+        fade_target = max(0.01, min(0.99, fade_target))
         edge = calc_edge(fade_target, last_m)
         if abs(edge) < settings.min_edge_cents:
             return None

@@ -29,21 +29,48 @@ async def insert_recommendation(
     score: float,
     payload: dict[str, Any],
     strategy_id: str | None = None,
+    category: str | None = None,
+    market_type: str | None = None,
+    question: str | None = None,
+    auto_approve: bool = False,
 ) -> int:
+    status = "approved" if auto_approve else "pending"
+    edge_cents = float(payload.get("edge_cents", 0))
+    edge_direction = "buy" if edge_cents > 0 else "sell"
     row = await conn.fetchrow(
         """
-        INSERT INTO recommendations (market_id, ts, score, status, payload_json, strategy_id)
-        VALUES ($1,$2,$3,'pending',$4::jsonb,$5)
+        INSERT INTO recommendations
+          (market_id, ts, score, status, payload_json, strategy_id,
+           category, market_type, question, edge_direction)
+        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10)
         RETURNING id
         """,
         market_id,
         _utcnow(),
         score,
+        status,
         json.dumps(payload),
         strategy_id,
+        category,
+        market_type,
+        question[:500] if question else None,
+        edge_direction,
     )
     assert row is not None
-    return int(row["id"])
+    rec_id = int(row["id"])
+
+    # If auto-approved, use the market_prob from the signal as entry price.
+    # This is the mid at signal generation time — NOT the latest price,
+    # which may have moved significantly if the market already resolved.
+    if auto_approve:
+        entry = float(payload.get("market_prob", 0.5))
+        await conn.execute(
+            "UPDATE recommendations SET entry_price = $2 WHERE id = $1",
+            rec_id,
+            entry,
+        )
+
+    return rec_id
 
 
 async def update_slack_refs(conn: asyncpg.Connection, rec_id: int, channel: str, ts: str) -> None:
@@ -67,16 +94,35 @@ async def update_telegram_refs(
 
 
 async def set_status(conn: asyncpg.Connection, rec_id: int, status: str, notes: str | None) -> None:
-    await conn.execute(
-        """
-        UPDATE recommendations
-        SET status = $2, human_notes = COALESCE($3, human_notes)
-        WHERE id = $1
-        """,
-        rec_id,
-        status,
-        notes,
-    )
+    # On approval, snapshot the current market mid as the real entry price
+    if status == "approved":
+        await conn.execute(
+            """
+            UPDATE recommendations
+            SET status = $2,
+                human_notes = COALESCE($3, human_notes),
+                entry_price = COALESCE(
+                    (SELECT mid FROM prices WHERE market_id = recommendations.market_id
+                     AND mid IS NOT NULL ORDER BY ts DESC LIMIT 1),
+                    entry_price
+                )
+            WHERE id = $1
+            """,
+            rec_id,
+            status,
+            notes,
+        )
+    else:
+        await conn.execute(
+            """
+            UPDATE recommendations
+            SET status = $2, human_notes = COALESCE($3, human_notes)
+            WHERE id = $1
+            """,
+            rec_id,
+            status,
+            notes,
+        )
 
 
 async def latest_slack_message_ref(
@@ -107,17 +153,19 @@ async def recent_recommendation_refs(
 ) -> dict[tuple[str, str | None], RecommendationRef]:
     if not market_ids:
         return {}
+    # Check for ANY unresolved recommendation for these markets — not just
+    # within the time window.  This prevents duplicate rows for the same
+    # position when a market stays in the top-N across multiple notifier ticks.
     rows = await conn.fetch(
         """
         SELECT DISTINCT ON (market_id, COALESCE(strategy_id, ''))
           id, market_id, strategy_id, status, slack_channel, slack_ts
         FROM recommendations
         WHERE market_id = ANY($1::text[])
-          AND ts > NOW() - ($2::text || ' minutes')::interval
+          AND resolved_outcome IS NULL
         ORDER BY market_id, COALESCE(strategy_id, ''), ts DESC
         """,
         market_ids,
-        str(window_minutes),
     )
     out: dict[tuple[str, str | None], RecommendationRef] = {}
     for row in rows:
