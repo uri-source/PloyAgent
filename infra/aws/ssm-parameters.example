@@ -1,0 +1,25 @@
+# Example SSM Parameter Store layout (SecureString). Create via Console or CLI.
+# Path prefix: /ploy-agent/prod/
+#
+# aws ssm put-parameter --name /ploy-agent/prod/POSTGRES_PASSWORD --value "$(openssl rand -hex 24)" --type SecureString
+# aws ssm put-parameter --name /ploy-agent/prod/DATABASE_URL --value "postgresql://postgres:SECRET@timescaledb:5432/ploy_agent" --type SecureString
+#
+# Required:
+POSTGRES_PASSWORD
+DATABASE_URL
+#
+# Recommended:
+ANTHROPIC_API_KEY
+POLY_GAMMA_TAGS
+POLY_GAMMA_EVENT_SLUGS
+ENRICHMENT_ESPN_LEAGUES
+AGENT_STRATEGIES
+MIN_EDGE_CENTS
+RANK_TOP_N
+#
+# Optional:
+SLACK_BOT_TOKEN
+SLACK_CHANNEL
+SIM_FORWARD_RUN_HOURS
+SIM_FORWARD_INTERVAL_SEC
+PLOY_INSECURE_SSL

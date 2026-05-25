@@ -11,7 +11,13 @@ Polymarket APIs may block or behave differently by region. If ingestion fails fr
 - A non-US egress VPN or cloud VM in an allowed region
 - Document the working region for your team
 
-## GCP (suggested production)
+## AWS (recommended for this repo)
+
+Single **EC2** + Docker Compose + **ALB** + **Cognito** for a private HTTPS dashboard.
+
+See [docs/aws-hosting.md](../docs/aws-hosting.md) and [docker-compose.aws.yml](../docker-compose.aws.yml).
+
+## GCP (alternative)
 
 - **Cloud SQL for PostgreSQL** with the TimescaleDB extension enabled (per Timescale Cloud SQL docs) or **Timescale Cloud** linked to your stack
 - **Cloud Run**: one service per worker (`ploy-ingest`, `ploy-enrich`, `ploy-reason`, `ploy-notify`, `ploy-web`) with the same container image and different `command` / args

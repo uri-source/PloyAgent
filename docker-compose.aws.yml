@@ -1,0 +1,18 @@
+# AWS overlay: use with prod compose on EC2 behind ALB + Cognito.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.aws.yml up -d
+#
+# Exposes web (8765) and slack-events (8766) on all interfaces so the ALB can reach
+# the instance. Restrict access with security groups (ec2-sg: only alb-sg inbound).
+# TimescaleDB stays off the public internet via docker-compose.prod.yml (ports: []).
+
+services:
+  web:
+    ports:
+      - "8765:8765"
+    environment:
+      WEB_HOST: "0.0.0.0"
+
+  slack-events:
+    ports:
+      - "8766:8766"

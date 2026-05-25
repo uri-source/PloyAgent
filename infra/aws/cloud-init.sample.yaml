@@ -1,0 +1,19 @@
+#cloud-config
+# Sample EC2 user-data for Ubuntu 24.04. Attach to instance launch (advanced → user data).
+# Set AWS_REGION and ensure instance role can read SSM /ploy-agent/prod/*
+#
+# After first boot, register instance in ALB target groups and complete Cognito/Route53.
+
+package_update: true
+
+write_files:
+  - path: /etc/ploy-agent/region
+    content: eu-west-1
+
+runcmd:
+  - apt-get install -y git curl ca-certificates awscli
+  - git clone --branch main --depth 1 https://github.com/uri-source/PloyAgent.git /opt/PloyAgent
+  - chmod +x /opt/PloyAgent/scripts/*.sh
+  - export AWS_REGION=eu-west-1
+  - export AWS_DEFAULT_REGION=eu-west-1
+  - /opt/PloyAgent/scripts/aws-bootstrap.sh 2>&1 | tee /var/log/ploy-agent-bootstrap.log

@@ -124,6 +124,19 @@ cp .env.production.example .env   # on the VPS — set POSTGRES_PASSWORD
 
 **You need to sign up for:** Cloudflare (free), a domain on Cloudflare DNS, and a VPS. Step-by-step checklist: [docs/cloudflare-private-dashboard.md](docs/cloudflare-private-dashboard.md).
 
+### Private dashboard on AWS (EC2 + ALB + Cognito)
+
+```bash
+# On EC2 after SSM secrets are configured — see full checklist
+./scripts/aws-ssm-pull-env.sh
+./scripts/aws-deploy.sh
+./scripts/aws-verify.sh
+```
+
+Compose: `docker-compose.yml` + `docker-compose.prod.yml` + `docker-compose.aws.yml`.
+
+Step-by-step: [docs/aws-hosting.md](docs/aws-hosting.md) (ACM, Cognito callback URLs, ALB target groups, Route 53).
+
 ### macOS / Python TLS errors (`CERTIFICATE_VERIFY_FAILED`)
 
 The app uses **`truststore`** (OS Keychain) plus **`certifi`**. If HTTPS/WebSocket still fails:

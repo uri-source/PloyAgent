@@ -430,6 +430,16 @@ internally. The `.env` file is shared via `env_file`.
 - Container name conflicts: `docker rm -f polyagent-timescaledb-1` then retry
 - Build after code changes: `docker compose up -d --build`
 
+### AWS production (EC2 + ALB + Cognito)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.aws.yml up -d
+```
+
+Scripts: `scripts/aws-bootstrap.sh`, `scripts/aws-ssm-pull-env.sh`, `scripts/aws-deploy.sh`, `scripts/aws-verify.sh`.
+
+Full checklist: [docs/aws-hosting.md](docs/aws-hosting.md).
+
 ---
 
 ## Polymarket API Reference
