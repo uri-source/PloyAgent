@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PloyAgent Paper Trading</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
+           --dim: #8b949e; --green: #3fb950; --red: #f85149; --blue: #58a6ff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+  h1 { font-size: 1.8em; margin-bottom: 8px; }
+  h2 { font-size: 1.15em; margin: 20px 0 10px; color: var(--blue); }
+  .subtitle { color: var(--dim); margin-bottom: 16px; max-width: 720px; line-height: 1.45; }
+  .nav { margin-bottom: 20px; }
+  .nav a { color: var(--blue); text-decoration: none; margin-right: 16px; }
+  .nav a:hover { text-decoration: underline; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .kpi .label { color: var(--dim); font-size: 0.75em; text-transform: uppercase; }
+  .kpi .value { font-size: 1.5em; font-weight: 700; margin-top: 4px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  th { text-align: left; padding: 8px; color: var(--dim); border-bottom: 1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover { background: rgba(88,166,255,0.05); }
+  .win { color: var(--green); }
+  .loss { color: var(--red); }
+  .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+  .pill-buy { background: rgba(63,185,80,0.2); color: var(--green); }
+  .pill-sell { background: rgba(248,81,73,0.2); color: var(--red); }
+  .mono { font-family: ui-monospace, monospace; font-size: 0.9em; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+  .toolbar select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+  .toolbar button { background: var(--blue); color: #fff; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  .rules { font-size: 0.85em; color: var(--dim); }
+  .rules li { margin: 6px 0 6px 18px; }
+  .rules strong { color: var(--text); }
+  #loading { padding: 40px; color: var(--dim); text-align: center; }
+  #content { display: none; }
+  .run-badge { font-size: 0.85em; color: var(--dim); }
+  .run-badge.live { color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="/">Dashboard</a>
+  <a href="/paper"><b>Paper trading</b></a>
+  <a href="/analytics">Recommendations analytics</a>
+</div>
+
+<h1>Paper trading performance</h1>
+<p class="subtitle">
+  Live simulated positions from <span class="mono">ploy-sim forward</span> (current forward run).
+  Each row is a BUY or SELL decision with explicit exit rules. Slack daily digests can use
+  <span class="mono">/api/sim/performance</span> later — not required for tracking.
+</p>
+
+<div class="toolbar">
+  <label>Profile
+    <select id="profileSelect"><option value="">All profiles (aggregate)</option></select>
+  </label>
+  <label>Ledger
+    <select id="statusFilter">
+      <option value="">All</option>
+      <option value="open">Open only</option>
+      <option value="closed" selected>Closed only</option>
+    </select>
+  </label>
+  <button type="button" onclick="loadAll()">Refresh</button>
+  <span class="run-badge" id="runBadge"></span>
+</div>
+
+<div id="loading">Loading paper trading data…</div>
+<div id="content">
+
+  <div class="kpi-grid" id="kpis"></div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Exit criteria</h2>
+    <ul class="rules" id="exitRules"></ul>
+  </div>
+
+  <h2>Daily performance</h2>
+  <div class="card" id="dailyTable"><p class="rules">No daily data yet.</p></div>
+
+  <h2>Exits by reason</h2>
+  <div class="card" id="reasonTable"><p class="rules">No closed trades yet.</p></div>
+
+  <h2>Decision ledger (BUY / SELL)</h2>
+  <div class="card" id="ledgerTable"><p class="rules">No trades.</p></div>
+</div>
+
+<script>
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+function fmtPnl(c) {
+  if (c == null) return '—';
+  const n = Number(c);
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '¢';
+}
+function pnlClass(c) {
+  if (c == null) return '';
+  return Number(c) >= 0 ? 'win' : 'loss';
+}
+
+let profiles = [];
+
+async function loadProfiles() {
+  const d = await (await fetch('/api/sim/profiles')).json();
+  profiles = d.profiles || [];
+  const sel = document.getElementById('profileSelect');
+  sel.innerHTML = '<option value="">All profiles (aggregate)</option>';
+  profiles.forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.id + ' — ' + (p.label || '');
+    sel.appendChild(o);
+  });
+}
+
+function renderKpis(perf) {
+  const t = perf.totals || {};
+  const tr = perf.tracker || {};
+  const run = tr.current_run;
+  const pnl = t.total_pnl_cents || 0;
+  const today = perf.today_pnl_cents;
+  const items = [
+    { label: 'Total P&L', value: fmtPnl(pnl), cls: pnlClass(pnl) },
+    { label: 'Today P&L', value: today != null ? fmtPnl(today) : '—', cls: pnlClass(today) },
+    { label: 'Closed', value: t.closed_count ?? 0 },
+    { label: 'Open', value: perf.open_positions ?? 0 },
+    { label: 'Win rate', value: t.win_rate != null ? (t.win_rate * 100).toFixed(1) + '%' : '—' },
+    { label: 'Open BUY / SELL', value: (perf.open_buys ?? 0) + ' / ' + (perf.open_sells ?? 0) },
+  ];
+  document.getElementById('kpis').innerHTML = items.map(i =>
+    `<div class="kpi"><div class="label">${i.label}</div><div class="value ${i.cls || ''}">${i.value}</div></div>`
+  ).join('');
+
+  const badge = document.getElementById('runBadge');
+  if (run) {
+    badge.textContent = 'Run #' + run.id + (tr.forward_active ? ' · LIVE' : ' · ended');
+    badge.className = 'run-badge' + (tr.forward_active ? ' live' : '');
+  } else {
+    badge.textContent = 'No forward run — start ploy-sim forward';
+    badge.className = 'run-badge';
+  }
+}
+
+function renderExitRules(rules) {
+  document.getElementById('exitRules').innerHTML = (rules || []).map(r =>
+    `<li><strong>${esc(r.label)}</strong> (<span class="mono">${esc(r.id)}</span>) — ${esc(r.description)}</li>`
+  ).join('');
+}
+
+function renderDaily(rows) {
+  if (!rows || !rows.length) {
+    document.getElementById('dailyTable').innerHTML = '<p class="rules">No daily data yet.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Date</th><th>Opened</th><th>Closed</th><th>W/L</th><th>Day P&L</th><th>Cumulative</th></tr></thead><tbody>';
+  rows.slice().reverse().forEach(r => {
+    html += `<tr>
+      <td class="mono">${r.date}</td>
+      <td>${r.opened}</td>
+      <td>${r.closed}</td>
+      <td>${r.wins}/${r.losses}</td>
+      <td class="mono ${pnlClass(r.pnl_cents)}">${fmtPnl(r.pnl_cents)}</td>
+      <td class="mono ${pnlClass(r.cumulative_pnl_cents)}">${fmtPnl(r.cumulative_pnl_cents)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('dailyTable').innerHTML = html;
+}
+
+function renderReasons(rows) {
+  if (!rows || !rows.length) {
+    document.getElementById('reasonTable').innerHTML = '<p class="rules">No closed trades yet.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Exit reason</th><th>Count</th><th>Win rate</th><th>Total P&L</th><th>Avg P&L</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const wr = r.win_rate != null ? (r.win_rate * 100).toFixed(1) + '%' : '—';
+    html += `<tr>
+      <td class="mono">${esc(r.close_reason)}</td>
+      <td>${r.count}</td>
+      <td>${wr}</td>
+      <td class="mono ${pnlClass(r.total_pnl_cents)}">${fmtPnl(r.total_pnl_cents)}</td>
+      <td class="mono">${fmtPnl(r.mean_pnl_cents)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('reasonTable').innerHTML = html;
+}
+
+function renderLedger(trades) {
+  if (!trades || !trades.length) {
+    document.getElementById('ledgerTable').innerHTML = '<p class="rules">No trades for this filter.</p>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Opened</th><th>Closed</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Edge</th><th>P&L</th><th>Exit</th><th>Profile</th><th>Market</th></tr></thead><tbody>';
+  trades.forEach(t => {
+    const dir = (t.direction || '').toUpperCase();
+    const pill = dir === 'BUY' ? 'pill-buy' : 'pill-sell';
+    html += `<tr>
+      <td class="mono">${(t.opened_at || '').slice(0, 16).replace('T', ' ')}</td>
+      <td class="mono">${t.closed_at ? t.closed_at.slice(0, 16).replace('T', ' ') : '—'}</td>
+      <td><span class="pill ${pill}">${dir}</span></td>
+      <td class="mono">${t.entry_price != null ? (t.entry_price * 100).toFixed(0) + '¢' : '—'}</td>
+      <td class="mono">${t.exit_price != null ? (t.exit_price * 100).toFixed(0) + '¢' : '—'}</td>
+      <td class="mono ${t.edge_cents >= 0 ? 'win' : 'loss'}">${t.edge_cents >= 0 ? '+' : ''}${Number(t.edge_cents).toFixed(1)}¢</td>
+      <td class="mono ${pnlClass(t.pnl_cents)}">${fmtPnl(t.pnl_cents)}</td>
+      <td>${esc(t.close_reason || (t.status === 'open' ? 'open' : '—'))}</td>
+      <td class="mono" style="font-size:0.75em">${esc(t.profile_id)}</td>
+      <td><small>${esc((t.question || t.market_id || '').slice(0, 80))}</small></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('ledgerTable').innerHTML = html;
+}
+
+async function loadPerformance() {
+  const pid = document.getElementById('profileSelect').value;
+  const qs = pid ? '?profile_id=' + encodeURIComponent(pid) : '';
+  const perf = await (await fetch('/api/sim/performance' + qs)).json();
+  renderKpis(perf);
+  renderExitRules(perf.exit_rules);
+  renderDaily(perf.daily);
+  renderReasons(perf.by_close_reason);
+  return perf;
+}
+
+async function loadLedger() {
+  const pid = document.getElementById('profileSelect').value;
+  const st = document.getElementById('statusFilter').value;
+  let url = '/api/sim/trades?limit=500';
+  if (pid) url += '&profile_id=' + encodeURIComponent(pid);
+  if (st) url += '&status=' + encodeURIComponent(st);
+  const d = await (await fetch(url)).json();
+  renderLedger(d.trades || []);
+}
+
+async function loadAll() {
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('content').style.display = 'none';
+  try {
+    await loadPerformance();
+    await loadLedger();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Failed to load: ' + e;
+  }
+}
+
+document.getElementById('profileSelect').addEventListener('change', loadAll);
+document.getElementById('statusFilter').addEventListener('change', () => loadLedger());
+
+loadProfiles().then(loadAll);
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>

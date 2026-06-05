@@ -485,12 +485,13 @@ async def sim_trades_list(
     profile_id: str | None = None,
     sim_run_id: int | None = None,
     all_runs: bool = False,
+    status: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     from ploy_agent.sim import repo as sim_repo
     from ploy_agent.sim.tracker import trade_row_to_dict
 
-    limit = min(max(limit, 1), 200)
+    limit = min(max(limit, 1), 1000)
     pool = await get_pool()
     async with pool.acquire() as conn:
         run_id = (
@@ -504,11 +505,71 @@ async def sim_trades_list(
             conn,
             profile_id=profile_id,
             sim_run_id=run_id,
+            status=status,
             limit=limit,
         )
 
     trades = [trade_row_to_dict(r) for r in rows]
     return {"trades": trades, "count": len(trades), "sim_run_id": run_id}
+
+
+@app.get("/api/sim/performance")
+async def sim_performance(
+    profile_id: str | None = None,
+    sim_run_id: int | None = None,
+    all_runs: bool = False,
+) -> dict[str, Any]:
+    """Paper-trading performance: daily rollup, exit breakdown, open positions."""
+    from ploy_agent.sim import repo as sim_repo
+    from ploy_agent.sim.metrics import trades_from_rows
+    from ploy_agent.sim.performance import build_performance_payload
+    from ploy_agent.sim.tracker import build_tracker_payload
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        run_id = (
+            await sim_repo.resolve_forward_run_id(conn, sim_run_id)
+            if not all_runs
+            else sim_run_id
+        )
+        run = await sim_repo.fetch_latest_forward_run(conn) if not all_runs else None
+        if all_runs:
+            run = None
+        elif run_id is not None:
+            run = await conn.fetchrow(
+                "SELECT id, started_at, ended_at, mode, notes FROM sim_runs WHERE id = $1",
+                run_id,
+            )
+        totals_row = (
+            await sim_repo.fetch_run_totals(conn, run_id) if run_id is not None else None
+        )
+        if run_id is None:
+            return {
+                **build_performance_payload([], profile_id=profile_id, sim_run_id=None),
+                "tracker": build_tracker_payload(
+                    run=None,
+                    totals=None,
+                    recent_rows=[],
+                    now=datetime.now(timezone.utc),
+                    sim_forward_run_hours=settings.sim_forward_run_hours,
+                ),
+            }
+        rows = await sim_repo.fetch_trades(
+            conn, profile_id=profile_id, sim_run_id=run_id, limit=50_000
+        )
+
+    trades = trades_from_rows([dict(r) for r in rows])
+    payload = build_performance_payload(
+        trades, profile_id=profile_id, sim_run_id=run_id
+    )
+    payload["tracker"] = build_tracker_payload(
+        run=dict(run) if run else None,
+        totals=dict(totals_row) if totals_row else None,
+        recent_rows=[],
+        now=datetime.now(timezone.utc),
+        sim_forward_run_hours=settings.sim_forward_run_hours,
+    )
+    return payload
 
 
 @app.get("/api/sim/tracker")
@@ -1235,6 +1296,12 @@ async def analytics_data() -> dict[str, Any]:
 @app.get("/analytics", response_class=HTMLResponse)
 async def analytics_page(request: Request) -> Any:
     return templates.TemplateResponse(request, "analytics.html", {})
+
+
+@app.get("/paper", response_class=HTMLResponse)
+async def paper_trading_page(request: Request) -> Any:
+    """Paper-trading performance: decision ledger, daily stats, exit rules."""
+    return templates.TemplateResponse(request, "paper.html", {})
 
 
 def run() -> None:

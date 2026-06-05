@@ -30,9 +30,11 @@ for i in $(seq 1 30); do
 done
 
 echo ""
-echo "Next steps (see docs/cloudflare-private-dashboard.md):"
-echo "  1. Install cloudflared on this VPS"
-echo "  2. cloudflared tunnel login && tunnel create"
-echo "  3. Configure ~/.cloudflared/config.yml (infra/cloudflared/config.example.yml)"
-echo "  4. Cloudflare Access → allow friends' emails"
-echo "  5. Optional: docker compose ... run --rm web ploy-sim init-profiles"
+echo "Next steps:"
+echo "  1. One-time sim profiles:"
+echo "     docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm web ploy-sim init-profiles"
+echo "  2. From your Mac, SSH tunnel to the dashboard:"
+echo "     ssh -N -L 8765:127.0.0.1:8765 root@YOUR_VPS_IP"
+echo "     → http://127.0.0.1:8765/paper"
+echo "  3. Full guide: docs/simple-vps-guide.md"
+echo "  4. Optional HTTPS for friends: docs/cloudflare-private-dashboard.md"

@@ -36,6 +36,10 @@ services:
     environment:
       <<: *database_url
 
+  sim-forward:
+    environment:
+      <<: *database_url
+
   web:
     ports:
       - "127.0.0.1:8765:8765"

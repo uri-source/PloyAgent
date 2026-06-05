@@ -112,6 +112,10 @@ An "edge" of 6.5 cents means the model thinks the market is mispriced by 6.5 per
 
 See [infra/README.md](infra/README.md) for hosting, geo-restrictions, and GCP notes.
 
+### Run 24/7 on a simple VPS (recommended over AWS)
+
+Step-by-step: **[docs/simple-vps-guide.md](docs/simple-vps-guide.md)** — Hetzner/DigitalOcean, Docker, SSH tunnel to `/paper`. No Cognito/ALB.
+
 ### Share the dashboard with friends (private HTTPS)
 
 Deploy on a VPS with production Docker settings, then expose **only** via [Cloudflare Tunnel + Access](docs/cloudflare-private-dashboard.md) (email allowlist — no public port 8765).

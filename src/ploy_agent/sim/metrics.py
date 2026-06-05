@@ -21,6 +21,10 @@ class TradeRecord:
     market_prob: float
     edge_cents: float
     resolved_outcome: int | None
+    direction: str = "buy"
+    exit_price: float | None = None
+    close_reason: str | None = None
+    score: float = 0.0
 
 
 def _brier(p: float, y: int) -> float:
@@ -152,8 +156,76 @@ def trades_from_rows(rows: list[Any]) -> list[TradeRecord]:
                 resolved_outcome=int(r["resolved_outcome"])
                 if r.get("resolved_outcome") is not None
                 else None,
+                direction=str(r.get("direction") or "buy").lower(),
+                exit_price=float(r["exit_price"]) if r.get("exit_price") is not None else None,
+                close_reason=str(r["close_reason"]) if r.get("close_reason") else None,
+                score=float(r.get("score") or 0),
             )
         )
+    return out
+
+
+def daily_performance(trades: list[TradeRecord]) -> list[dict[str, Any]]:
+    """Per-calendar-day stats for closed trades (by closed_at) and opens (by opened_at)."""
+    closed_by_day: dict[date, list[TradeRecord]] = defaultdict(list)
+    opened_by_day: dict[date, int] = defaultdict(int)
+
+    for t in trades:
+        opened_by_day[t.opened_at.date()] += 1
+        if t.status == "closed" and t.closed_at is not None and t.pnl_cents is not None:
+            closed_by_day[t.closed_at.date()].append(t)
+
+    all_days = sorted(set(opened_by_day.keys()) | set(closed_by_day.keys()))
+    out: list[dict[str, Any]] = []
+    cumulative = 0.0
+    for d in all_days:
+        closed = closed_by_day.get(d, [])
+        day_pnl = sum(float(t.pnl_cents) for t in closed)
+        wins = sum(1 for t in closed if float(t.pnl_cents) > 0)
+        cumulative += day_pnl
+        buys = sum(1 for t in closed if t.direction == "buy")
+        sells = sum(1 for t in closed if t.direction == "sell")
+        out.append(
+            {
+                "date": d.isoformat(),
+                "opened": opened_by_day.get(d, 0),
+                "closed": len(closed),
+                "buys_closed": buys,
+                "sells_closed": sells,
+                "wins": wins,
+                "losses": len(closed) - wins,
+                "pnl_cents": round(day_pnl, 2),
+                "cumulative_pnl_cents": round(cumulative, 2),
+                "win_rate": round(wins / len(closed), 4) if closed else None,
+            }
+        )
+    return out
+
+
+def close_reason_breakdown(trades: list[TradeRecord]) -> list[dict[str, Any]]:
+    """Aggregate closed trades by close_reason."""
+    groups: dict[str, list[TradeRecord]] = defaultdict(list)
+    for t in trades:
+        if t.status != "closed" or t.pnl_cents is None:
+            continue
+        key = t.close_reason or "unknown"
+        groups[key].append(t)
+
+    out: list[dict[str, Any]] = []
+    for reason, items in groups.items():
+        pnls = [float(t.pnl_cents) for t in items]
+        wins = sum(1 for p in pnls if p > 0)
+        out.append(
+            {
+                "close_reason": reason,
+                "count": len(items),
+                "wins": wins,
+                "win_rate": round(wins / len(items), 4) if items else None,
+                "total_pnl_cents": round(sum(pnls), 2),
+                "mean_pnl_cents": round(sum(pnls) / len(items), 3) if items else 0.0,
+            }
+        )
+    out.sort(key=lambda x: int(x["count"]), reverse=True)
     return out
 
 
