@@ -3,11 +3,23 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from ploy_agent.common.config import settings
+from ploy_agent.common.explain import direction_label
 from ploy_agent.common.scoring import edge_cents as calc_edge
 from ploy_agent.reasoning.model import align_prob_to_yes, predict_home_win_prob
 from ploy_agent.reasoning import repo as rrepo
 from ploy_agent.strategies.base import Strategy
 from ploy_agent.strategies.types import StrategyContext, StrategyResult
+
+
+def player_adjust_sentence(
+    adj: float, dh: float, da: float, p_yes: float, mid: float, edge_cents: float,
+) -> str:
+    """One concise, fact-only sentence for the lineup-strength adjustment."""
+    return (
+        f"{direction_label(edge_cents)}: lineup-strength adjustment of {adj:+.3f} to home win "
+        f"prob (active-player EPM: home {dh:+.2f} vs away {da:+.2f}) puts Yes at {p_yes:.2f} "
+        f"vs market {mid:.2f} ({abs(edge_cents):.1f}¢ edge)."
+    )
 
 
 def _norm_keys(names: list[Any]) -> list[str]:
@@ -65,10 +77,7 @@ class PlayerAdjustStrategy(Strategy):
         edge = calc_edge(p_yes, mid)
         if abs(edge) < settings.min_edge_cents:
             return None
-        reasoning = (
-            f"Player-impact adjustment Δ≈{adj:+.4f} on home win prob (lineup EPM sum home {dh:+.2f}, away {da:+.2f}). "
-            f"Adjusted Yes {p_yes:.3f} vs mid {mid:.3f}."
-        )
+        reasoning = player_adjust_sentence(adj, dh, da, p_yes, mid, edge)
         return StrategyResult(
             model_prob=p_yes,
             market_prob=mid,

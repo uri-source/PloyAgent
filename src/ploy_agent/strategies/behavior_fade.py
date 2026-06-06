@@ -4,11 +4,24 @@ from datetime import datetime, timezone
 from typing import ClassVar
 
 from ploy_agent.common.config import settings
+from ploy_agent.common.explain import direction_label
 from ploy_agent.common.scoring import edge_cents as calc_edge
 from ploy_agent.reasoning.model import align_prob_to_yes, predict_home_win_prob
 from ploy_agent.reasoning import repo as rrepo
 from ploy_agent.strategies.base import Strategy
 from ploy_agent.strategies.types import StrategyContext, StrategyResult
+
+
+def behavior_fade_sentence(
+    price_delta: float, model_delta: float, fade_target: float, last_mid: float,
+    edge_cents: float,
+) -> str:
+    """One concise, fact-only sentence for a faded overreaction."""
+    return (
+        f"{direction_label(edge_cents)}: after a score swing the mid moved {price_delta:+.2f} "
+        f"but the model moved only {model_delta:+.2f} — likely overshoot; fading toward "
+        f"{fade_target:.2f} vs last {last_mid:.2f} ({abs(edge_cents):.1f}¢ edge)."
+    )
 
 
 class BehaviorFadeStrategy(Strategy):
@@ -91,9 +104,8 @@ class BehaviorFadeStrategy(Strategy):
         edge = calc_edge(fade_target, last_m)
         if abs(edge) < settings.min_edge_cents:
             return None
-        reasoning = (
-            f"Behavior fade: mid moved {price_delta:+.3f} vs model ΔYes {model_delta:+.3f} after score swing — "
-            f"possible overshoot. Suggested anchor ~{fade_target:.3f} vs last mid {last_m:.3f}."
+        reasoning = behavior_fade_sentence(
+            price_delta, model_delta, fade_target, last_m, edge
         )
         return StrategyResult(
             model_prob=fade_target,
