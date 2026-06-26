@@ -214,14 +214,14 @@ async def recent_game_events(
 
 async def sibling_market_mids(
     conn: asyncpg.Connection, gamma_event_id: str, exclude_market_id: str
-) -> list[tuple[str, float]]:
+) -> list[tuple[str, float, str | None]]:
     rows = await conn.fetch(
         """
         WITH lp AS (
           SELECT DISTINCT ON (market_id) market_id, mid
           FROM prices WHERE mid IS NOT NULL ORDER BY market_id, ts DESC
         )
-        SELECT m.id AS market_id, lp.mid
+        SELECT m.id AS market_id, lp.mid, m.question
         FROM markets m
         JOIN lp ON lp.market_id = m.id
         WHERE m.gamma_event_id = $1 AND m.id <> $2 AND m.status IS DISTINCT FROM 'closed'
@@ -229,7 +229,7 @@ async def sibling_market_mids(
         gamma_event_id,
         exclude_market_id,
     )
-    return [(str(r["market_id"]), float(r["mid"])) for r in rows]
+    return [(str(r["market_id"]), float(r["mid"]), r["question"]) for r in rows]
 
 
 async def latest_lineup(conn: asyncpg.Connection, game_id: str) -> dict[str, Any] | None:
