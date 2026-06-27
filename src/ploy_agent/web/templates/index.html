@@ -208,6 +208,22 @@
     .sim-tracker-meta { font-size: 0.8rem; color: var(--muted); }
     .sim-recent { margin-top: 0.65rem; font-size: 0.8rem; }
     .sim-recent table { width: 100%; }
+    .hero-sim {
+      margin-top: 1.25rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+    }
+    .hero-sim h2 { color: var(--accent); }
+    .pill-hours {
+      background: rgba(61, 158, 255, 0.15);
+      color: var(--accent);
+      font-size: 0.72rem;
+    }
+    .pill-unknown {
+      background: rgba(136, 146, 164, 0.2);
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -285,6 +301,60 @@
       {% endif %}
     </div>
     <p id="live-updated"></p>
+
+    <div class="hero-sim">
+      <h2>Paper sim eligible</h2>
+      <p class="section-lead">
+        {% if sim_max_hours_to_resolution > 0 %}
+        Markets with a known <strong>end_date</strong> within <strong>{{ "%.0f"|format(sim_max_hours_to_resolution) }}h</strong>
+        — same entry gate as <span class="mono">ploy-sim forward</span>
+        (<span class="mono">SIM_MAX_HOURS_TO_RESOLUTION</span>).
+        {% else %}
+        Resolution horizon filter is <strong>disabled</strong> (<span class="mono">SIM_MAX_HOURS_TO_RESOLUTION=0</span>).
+        {% endif %}
+        Track fills on <a href="/paper" style="color:var(--accent)">Paper trading</a>.
+      </p>
+      <div id="sim-picks-container" class="rec-list">
+        {% if sim_picks %}
+          {% for p in sim_picks %}
+          <article class="rec-card rank-{{ loop.index }}">
+            <div class="rec-header">
+              <span class="rank-num">#{{ loop.index }}</span>
+              <h3 class="rec-title">{{ p.question or "(no title)" }}</h3>
+              <span class="pill pill-{{ 'buy' if p.direction == 'BUY' else 'sell' }}">{{ p.direction }}</span>
+              <span class="edge-big {% if p.edge_cents >= 0 %}edge-pos{% else %}edge-neg{% endif %}">
+                {% if p.edge_cents >= 0 %}+{% endif %}{{ "%.1f"|format(p.edge_cents) }}¢
+              </span>
+            </div>
+            <div class="stats-row">
+              <span><span class="badge">{{ p.strategy_id }}</span></span>
+              {% if p.category %}<span><span class="badge">{{ p.category }}</span></span>{% endif %}
+              {% if p.hours_to_resolution is not none %}
+              <span><span class="pill pill-hours">~{{ "%.0f"|format(p.hours_to_resolution) }}h to resolve</span></span>
+              {% else %}
+              <span><span class="pill pill-unknown">no end_date</span></span>
+              {% endif %}
+              <span>Market <strong>{{ "%.0f"|format(p.market_prob * 100) }}%</strong></span>
+              <span>Model <strong>{{ "%.0f"|format(p.model_prob * 100) }}%</strong></span>
+              <span>Score <strong>{{ "%.2f"|format(p.score) }}</strong></span>
+            </div>
+            {% if p.reasoning %}
+            <p class="reason">{{ p.reasoning }}</p>
+            {% endif %}
+          </article>
+          {% endfor %}
+        {% else %}
+          <div class="empty-box">
+            {% if sim_max_hours_to_resolution > 0 %}
+            No ranked edges pass the {{ "%.0f"|format(sim_max_hours_to_resolution) }}h resolution window right now.
+            {% else %}
+            No edges above threshold right now.
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+      <p id="sim-picks-updated"></p>
+    </div>
   </div>
 
   <section>
@@ -491,12 +561,22 @@
     return d.innerHTML;
   }
 
-  function renderPickCard(p, rank) {
+  function renderPickCard(p, rank, opts = {}) {
     const edgeClass = p.edge_cents >= 0 ? 'edge-pos' : 'edge-neg';
     const pillClass = p.direction === 'BUY' ? 'pill-buy' : 'pill-sell';
     const sign = p.edge_cents >= 0 ? '+' : '';
     const kelly = p.kelly_frac > 0
       ? `<span>Kelly <strong>${(p.kelly_frac * 100).toFixed(1)}%</strong></span>` : '';
+    let hoursBadge = '';
+    if (opts.simSection) {
+      if (p.hours_to_resolution != null) {
+        hoursBadge = `<span><span class="pill pill-hours">~${Math.round(p.hours_to_resolution)}h to resolve</span></span>`;
+      } else {
+        hoursBadge = `<span><span class="pill pill-unknown">no end_date</span></span>`;
+      }
+    }
+    const category = p.category
+      ? `<span><span class="badge">${esc(p.category)}</span></span>` : '';
     return `<article class="rec-card rank-${rank}">
       <div class="rec-header">
         <span class="rank-num">#${rank}</span>
@@ -506,12 +586,14 @@
       </div>
       <div class="stats-row">
         <span><span class="badge">${esc(p.strategy_id)}</span></span>
+        ${category}
+        ${hoursBadge}
         <span>Market <strong>${Math.round(p.market_prob * 100)}%</strong></span>
         <span>Model <strong>${Math.round(p.model_prob * 100)}%</strong></span>
         <span>Confidence <strong>${Math.round(p.confidence * 100)}%</strong></span>
         <span>Score <strong>${p.score.toFixed(2)}</strong></span>
-        <span>Liquidity <strong>${Math.round(p.depth_1c)}</strong> @1¢</span>
-        ${kelly}
+        ${opts.simSection ? '' : `<span>Liquidity <strong>${Math.round(p.depth_1c)}</strong> @1¢</span>`}
+        ${opts.simSection ? '' : kelly}
       </div>
       ${p.reasoning ? `<p class="reason">${esc(p.reasoning)}</p>` : ''}
     </article>`;
@@ -522,11 +604,25 @@
       const r = await fetch('/api/top-picks');
       const d = await r.json();
       const el = document.getElementById('top-picks-container');
+      const simEl = document.getElementById('sim-picks-container');
       const updated = document.getElementById('live-updated');
+      const simUpdated = document.getElementById('sim-picks-updated');
       if (!d.picks || d.picks.length === 0) {
         el.innerHTML = '<div class="empty-box">No edges above threshold right now.</div>';
       } else {
-        el.innerHTML = d.picks.map((p, i) => renderPickCard(p, i + 1)).join('');
+        el.innerHTML = d.picks.map((p, i) => renderPickCard(p, i + 1, { simSection: false })).join('');
+      }
+      if (simEl) {
+        const simPicks = d.sim_picks || [];
+        if (simPicks.length === 0) {
+          const msg = (d.sim_max_hours_to_resolution || 0) > 0
+            ? `No ranked edges pass the ${Math.round(d.sim_max_hours_to_resolution)}h resolution window right now.`
+            : 'No edges above threshold right now.';
+          simEl.innerHTML = `<div class="empty-box">${msg}</div>`;
+        } else {
+          simEl.innerHTML = simPicks.map((p, i) => renderPickCard(p, i + 1, { simSection: true })).join('');
+        }
+        if (simUpdated) simUpdated.textContent = 'Updated ' + new Date().toLocaleTimeString();
       }
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
     } catch (e) { /* keep server-rendered */ }

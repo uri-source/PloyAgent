@@ -13,6 +13,7 @@ from ploy_agent.common.scoring import (
     hours_until,
     passes_entry_price_gate,
     passes_risk_reward_gate,
+    passes_sim_resolution_horizon,
 )
 
 
@@ -149,3 +150,18 @@ async def top_picks(
                 best[p.market_id] = p
         picks = sorted(best.values(), key=lambda p: p.score, reverse=True)
     return picks[:limit]
+
+
+def filter_sim_resolution_picks(
+    picks: list[RankedPick],
+    *,
+    limit: int | None = None,
+) -> list[RankedPick]:
+    """Picks eligible for paper sim entry under SIM_MAX_HOURS_TO_RESOLUTION."""
+    if settings.sim_max_hours_to_resolution <= 0:
+        out = picks
+    else:
+        out = [p for p in picks if passes_sim_resolution_horizon(p.end_date)]
+    if limit is not None:
+        return out[:limit]
+    return out

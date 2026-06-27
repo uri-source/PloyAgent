@@ -1,4 +1,12 @@
-from ploy_agent.common.scoring import composite_score, edge_cents, hours_until, time_factor_hours
+from datetime import datetime, timedelta, timezone
+
+from ploy_agent.common.scoring import (
+    composite_score,
+    edge_cents,
+    hours_until,
+    passes_sim_resolution_horizon,
+    time_factor_hours,
+)
 
 
 def test_edge_cents() -> None:
@@ -17,3 +25,11 @@ def test_composite_score_shape() -> None:
 
 def test_hours_until_none() -> None:
     assert hours_until(None) == 24.0
+
+
+def test_passes_sim_resolution_horizon() -> None:
+    t0 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    assert passes_sim_resolution_horizon(t0 + timedelta(hours=24), now=t0, max_hours=48.0)
+    assert not passes_sim_resolution_horizon(t0 + timedelta(days=7), now=t0, max_hours=48.0)
+    assert not passes_sim_resolution_horizon(None, now=t0, max_hours=48.0)
+    assert passes_sim_resolution_horizon(None, now=t0, max_hours=0.0)

@@ -74,3 +74,25 @@ def hours_until(end: datetime | None, now: datetime | None = None) -> float:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
     return max((end - now).total_seconds() / 3600.0, 0.0)
+
+
+def passes_sim_resolution_horizon(
+    end_date: datetime | None,
+    *,
+    now: datetime | None = None,
+    max_hours: float | None = None,
+) -> bool:
+    """True when paper sim would allow entry based on market end_date (0 max_hours = no gate)."""
+    from ploy_agent.common.config import settings
+
+    limit = settings.sim_max_hours_to_resolution if max_hours is None else max_hours
+    if limit <= 0:
+        return True
+    if end_date is None:
+        return False
+    end = end_date
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return hours_until(end, now) <= limit

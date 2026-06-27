@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from ploy_agent.common.config import settings
 from ploy_agent.common.pnl import compute_pnl_cents, mtm_pnl_cents, trade_direction
-from ploy_agent.common.scoring import hours_until, passes_entry_price_gate, passes_risk_reward_gate
+from ploy_agent.common.scoring import (
+    passes_entry_price_gate,
+    passes_risk_reward_gate,
+    passes_sim_resolution_horizon,
+)
 from ploy_agent.sim.rules import is_reverse_signal, should_enter
 from ploy_agent.sim.types import ClosedTrade, OpenPosition, PortfolioState, SimProfile, SimSignal
 
@@ -45,15 +49,8 @@ class ProfilePortfolio:
             signal.market_prob, signal.edge_cents, settings.min_risk_reward
         ):
             return None
-        max_h = settings.sim_max_hours_to_resolution
-        if max_h > 0:
-            if signal.end_date is None:
-                return None
-            end = signal.end_date
-            if end.tzinfo is None:
-                end = end.replace(tzinfo=signal.ts.tzinfo or timezone.utc)
-            if hours_until(end, signal.ts) > max_h:
-                return None
+        if not passes_sim_resolution_horizon(signal.end_date, now=signal.ts):
+            return None
         key = _pos_key(self.profile.id, signal.market_id)
         if key in self.state.open_by_key:
             return None

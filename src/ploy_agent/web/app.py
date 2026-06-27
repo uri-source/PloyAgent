@@ -14,7 +14,8 @@ from starlette.responses import StreamingResponse
 
 from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
-from ploy_agent.notifier.rank import top_picks
+from ploy_agent.common.scoring import hours_until, passes_sim_resolution_horizon
+from ploy_agent.notifier.rank import filter_sim_resolution_picks, top_picks
 
 _ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_ROOT / "templates"))
@@ -211,14 +212,18 @@ def _payload_dict(raw: Any) -> dict[str, Any]:
 
 
 def _pick_dicts(picks: list[Any]) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc)
     out: list[dict[str, Any]] = []
     for p in picks:
         edge = float(p.edge_cents)
+        end = getattr(p, "end_date", None)
+        hrs = hours_until(end, now) if end is not None else None
         out.append(
             {
                 "strategy_id": p.strategy_id,
                 "market_id": p.market_id,
                 "question": p.question or "",
+                "category": getattr(p, "category", "") or "",
                 "mid": p.mid,
                 "model_prob": p.model_prob,
                 "market_prob": p.market_prob,
@@ -229,6 +234,11 @@ def _pick_dicts(picks: list[Any]) -> list[dict[str, Any]]:
                 "depth_1c": p.depth_1c,
                 "score": p.score,
                 "kelly_frac": getattr(p, "kelly_frac", 0.0) or 0.0,
+                "end_date": end.isoformat() if isinstance(end, datetime) else None,
+                "hours_to_resolution": hrs,
+                "sim_eligible": passes_sim_resolution_horizon(end, now=now)
+                if settings.sim_max_hours_to_resolution > 0
+                else True,
             }
         )
     return out
@@ -264,12 +274,14 @@ def _recommendation_dicts(rows: list[Any]) -> list[dict[str, Any]]:
 async def dashboard(request: Request) -> Any:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        picks = await top_picks(
+        all_picks = await top_picks(
             conn,
-            limit=settings.rank_top_n,
+            limit=max(settings.rank_top_n * 20, 50),
             strategy_ids=settings.strategy_ids(),
             merge_by_market=settings.rank_merge_by_market,
         )
+        sim_picks = filter_sim_resolution_picks(all_picks, limit=settings.rank_top_n)
+        picks = all_picks[: settings.rank_top_n]
         # Use approximate counts for hypertables to avoid slow full scans
         async def _approx_count(table: str) -> int:
             # TimescaleDB: sum reltuples across all chunks for the hypertable
@@ -371,6 +383,8 @@ async def dashboard(request: Request) -> Any:
         "index.html",
         {
             "picks": _pick_dicts(picks),
+            "sim_picks": _pick_dicts(sim_picks),
+            "sim_max_hours_to_resolution": settings.sim_max_hours_to_resolution,
             "saved_recommendations": saved_recommendations,
             "rank_top_n": settings.rank_top_n,
             "min_edge_cents": settings.min_edge_cents,
@@ -728,13 +742,20 @@ async def api_top_picks() -> dict[str, Any]:
     """Live ranked edges (same logic as notifier ranking)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        picks = await top_picks(
+        all_picks = await top_picks(
             conn,
-            limit=settings.rank_top_n,
+            limit=max(settings.rank_top_n * 20, 50),
             strategy_ids=settings.strategy_ids(),
             merge_by_market=settings.rank_merge_by_market,
         )
-    return {"picks": _pick_dicts(picks), "rank_top_n": settings.rank_top_n}
+        sim_picks = filter_sim_resolution_picks(all_picks, limit=settings.rank_top_n)
+        picks = all_picks[: settings.rank_top_n]
+    return {
+        "picks": _pick_dicts(picks),
+        "sim_picks": _pick_dicts(sim_picks),
+        "rank_top_n": settings.rank_top_n,
+        "sim_max_hours_to_resolution": settings.sim_max_hours_to_resolution,
+    }
 
 
 @app.get("/api/recommendations")
