@@ -164,6 +164,14 @@ class Settings(BaseSettings):
         alias="SIM_REPLAY_DAYS",
         description="Default lookback for ploy-sim replay when --from is omitted",
     )
+    sim_max_hours_to_resolution: float = Field(
+        default=0.0,
+        alias="SIM_MAX_HOURS_TO_RESOLUTION",
+        description=(
+            "Paper sim: skip new entries when market end_date is unknown or farther than "
+            "N hours out. 0 = disabled."
+        ),
+    )
 
     web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8765, alias="WEB_PORT")

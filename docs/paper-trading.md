@@ -16,6 +16,12 @@ Keep `ploy-ingest`, `ploy-reason`, and `ploy-notify` running so `top_picks` feed
 
 Default forward run length: `SIM_FORWARD_RUN_HOURS` (14 days).
 
+### Short-dated markets only
+
+Set `SIM_MAX_HOURS_TO_RESOLUTION` (e.g. `48`) to restrict **paper sim entries** to markets whose `end_date` is within N hours. Unknown `end_date` is skipped. This is sim-only — live recommendations and Slack are unchanged.
+
+Use with NBA or same-day slugs so trades can exit via `resolution` or `max_hold` during the run. When `SIM_FORWARD_RUN_HOURS` expires, any remaining open positions are bulk-closed at the latest mid with `close_reason=forward_shutdown` (mark-to-market).
+
 ## View performance
 
 | Surface | URL |
@@ -35,7 +41,8 @@ Recommendations analytics (`/analytics`) tracks **approved recs held to resoluti
 | `resolution` | Market settled; binary P&L from outcome |
 | `signal_reverse` | Edge flips direction and passes profile entry gates; MTM exit |
 | `max_hold` | Held past category max (sports: 24h; default: 7d); MTM exit |
-| `mark_to_market` | End of replay/forward run bulk close |
+| `forward_shutdown` | End of forward run bulk close (when `SIM_FORWARD_RUN_HOURS` expires) |
+| `mark_to_market` | End of replay bulk close |
 
 Code: `src/ploy_agent/sim/portfolio.py`.
 

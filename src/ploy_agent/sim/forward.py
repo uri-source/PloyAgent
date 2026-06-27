@@ -29,6 +29,7 @@ def _pick_to_signal(pick: RankedPick, ts: datetime) -> SimSignal:
         edge_cents=pick.edge_cents,
         confidence=pick.confidence,
         score=pick.score,
+        end_date=pick.end_date,
     )
 
 

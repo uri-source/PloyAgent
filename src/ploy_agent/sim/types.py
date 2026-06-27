@@ -27,6 +27,7 @@ class SimSignal:
     edge_cents: float
     confidence: float
     score: float = 0.0
+    end_date: datetime | None = None
 
 
 @dataclass

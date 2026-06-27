@@ -70,6 +70,7 @@ def _row_to_signal(row: asyncpg.Record, now: datetime) -> SimSignal:
         edge_cents=edge,
         confidence=conf,
         score=sc,
+        end_date=end,
     )
 
 
