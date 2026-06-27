@@ -8,6 +8,7 @@ from ploy_agent.strategies.behavior_fade import BehaviorFadeStrategy
 from ploy_agent.strategies.book_imbalance import BookImbalanceStrategy
 from ploy_agent.strategies.consensus import ConsensusStrategy
 from ploy_agent.strategies.cross_market_arb import CrossMarketArbStrategy
+from ploy_agent.strategies.cross_venue_arb import CrossVenueArbStrategy
 from ploy_agent.strategies.player_adjust import PlayerAdjustStrategy
 from ploy_agent.strategies.sportsbook_consensus import SportsbookConsensusStrategy
 from ploy_agent.strategies.stale_quote import StaleQuoteStrategy
@@ -19,6 +20,7 @@ STRATEGIES: dict[str, Strategy] = {
     StaleQuoteStrategy.id: StaleQuoteStrategy(),
     SportsbookConsensusStrategy.id: SportsbookConsensusStrategy(),
     CrossMarketArbStrategy.id: CrossMarketArbStrategy(),
+    CrossVenueArbStrategy.id: CrossVenueArbStrategy(),
     BehaviorFadeStrategy.id: BehaviorFadeStrategy(),
     PlayerAdjustStrategy.id: PlayerAdjustStrategy(),
     BookImbalanceStrategy.id: BookImbalanceStrategy(),
@@ -37,8 +39,11 @@ def get_enabled(settings: Settings) -> list[Strategy]:
         if "odds_api" in req and not settings.odds_api_key:
             log.warning("strategy_skipped_missing_odds_api", strategy_id=sid)
             continue
+        if "kalshi" in req and not settings.kalshi_enabled:
+            log.warning("strategy_skipped_kalshi_disabled", strategy_id=sid)
+            continue
         out.append(strat)
     if not out:
-        log.warning("no_strategies_enabled_fallback_baseline")
-        out.append(STRATEGIES[BaselineModelStrategy.id])
+        log.warning("no_strategies_enabled_fallback_cross_market")
+        out.append(STRATEGIES[CrossMarketArbStrategy.id])
     return out

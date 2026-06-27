@@ -64,10 +64,36 @@ class Settings(BaseSettings):
     anthropic_model: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL")
 
     agent_strategies: str = Field(
-        default="baseline_model",
+        default="cross_venue_arb,cross_market_arb,book_imbalance",
         alias="AGENT_STRATEGIES",
         description="Comma-separated strategy ids",
     )
+
+    enrichment_enabled: bool = Field(
+        default=False,
+        alias="ENRICHMENT_ENABLED",
+        description="When false, ploy-enrich is optional (price-only stack)",
+    )
+
+    kalshi_enabled: bool = Field(default=True, alias="KALSHI_ENABLED")
+    kalshi_base_url: str = Field(
+        default="https://api.elections.kalshi.com/trade-api/v2",
+        alias="KALSHI_BASE_URL",
+    )
+    kalshi_api_key_id: str = Field(default="", alias="KALSHI_API_KEY_ID")
+    kalshi_private_key_path: str = Field(default="", alias="KALSHI_PRIVATE_KEY_PATH")
+    kalshi_poll_interval_sec: float = Field(default=10.0, alias="KALSHI_POLL_INTERVAL_SEC")
+
+    poly_fee_rate: float = Field(default=0.02, alias="POLY_FEE_RATE")
+    kalshi_fee_rate: float = Field(default=0.01, alias="KALSHI_FEE_RATE")
+    cross_venue_min_edge_cents: float = Field(default=8.0, alias="CROSS_VENUE_MIN_EDGE_CENTS")
+    cross_venue_max_stale_sec: float = Field(default=30.0, alias="CROSS_VENUE_MAX_STALE_SEC")
+    cross_venue_min_depth: float = Field(default=500.0, alias="CROSS_VENUE_MIN_DEPTH")
+    cross_venue_pairs_path: str = Field(
+        default="config/cross_venue/world_cup_pairs.yaml",
+        alias="CROSS_VENUE_PAIRS_PATH",
+    )
+    reason_candidate_max_hours: float = Field(default=6.0, alias="REASON_CANDIDATE_MAX_HOURS")
 
     stale_quote_window_sec: float = Field(default=120.0, alias="STALE_QUOTE_WINDOW_SEC")
     stale_quote_score_swing: int = Field(default=10, alias="STALE_QUOTE_SCORE_SWING")

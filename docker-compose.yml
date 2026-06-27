@@ -41,6 +41,7 @@ services:
     restart: unless-stopped
 
   enrich:
+    profiles: ["sports"]
     build: .
     command: ploy-enrich
     depends_on:
@@ -102,6 +103,20 @@ services:
   sim-forward:
     build: .
     command: ploy-sim forward
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/ploy_agent
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+
+  kalshi-ingest:
+    build: .
+    command: ploy-kalshi-ingest
     depends_on:
       migrate:
         condition: service_completed_successfully

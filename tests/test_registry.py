@@ -2,16 +2,16 @@ import pytest
 
 from ploy_agent.common.config import Settings
 from ploy_agent.strategies import get_enabled
-from ploy_agent.strategies.baseline_model import BaselineModelStrategy
+from ploy_agent.strategies.cross_market_arb import CrossMarketArbStrategy
 
 
-def test_get_enabled_unknown_falls_back_to_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_enabled_unknown_falls_back_to_cross_market(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_STRATEGIES", "not_a_real_strategy")
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     s = Settings()
     enabled = get_enabled(s)
     assert len(enabled) >= 1
-    assert isinstance(enabled[0], BaselineModelStrategy)
+    assert isinstance(enabled[0], CrossMarketArbStrategy)
 
 
 def test_get_enabled_baseline_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,4 +28,4 @@ def test_sportsbook_skipped_without_key(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     s = Settings()
     enabled = get_enabled(s)
-    assert any(isinstance(x, BaselineModelStrategy) for x in enabled)
+    assert any(isinstance(x, CrossMarketArbStrategy) for x in enabled)

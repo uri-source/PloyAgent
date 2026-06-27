@@ -21,6 +21,7 @@ dependencies = [
   "streamlit>=1.40",
   "structlog>=24",
   "python-multipart>=0.0.9",
+  "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,8 @@ ploy-web = "ploy_agent.web.app:run"
 ploy-slack-events = "ploy_agent.notifier.slack_events:run"
 ploy-backtest = "ploy_agent.backtest.__main__:main"
 ploy-sim = "ploy_agent.sim.__main__:main"
+ploy-kalshi-ingest = "ploy_agent.kalshi.__main__:main"
+ploy-kalshi = "ploy_agent.kalshi.cli:main"
 ploy-migrate = "ploy_agent.db.migrate:main"
 ploy-train-model = "ploy_agent.reasoning.train_model:main"
 

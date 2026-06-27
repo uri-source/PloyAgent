@@ -27,6 +27,7 @@ services:
   enrich:
     environment:
       <<: *database_url
+    profiles: ["sports"]
 
   reason:
     environment:
@@ -40,15 +41,19 @@ services:
     environment:
       <<: *database_url
 
+  kalshi-ingest:
+    environment:
+      <<: *database_url
+
   web:
-    ports:
+    ports: !override
       - "127.0.0.1:8765:8765"
     environment:
       <<: *database_url
-      WEB_HOST: "127.0.0.1"
+      WEB_HOST: "0.0.0.0"
 
   slack-events:
-    ports:
+    ports: !override
       - "127.0.0.1:8766:8766"
     environment:
       <<: *database_url

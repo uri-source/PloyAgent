@@ -38,7 +38,16 @@ start_svc() {
 
 echo "Starting PloyAgent stack from $ROOT"
 start_svc ingest "ploy-ingest"
-start_svc enrich "ploy-enrich"
+if [[ "${ENRICHMENT_ENABLED:-false}" == "true" ]]; then
+  start_svc enrich "ploy-enrich"
+else
+  echo "  enrich: skipped (ENRICHMENT_ENABLED=false)"
+fi
+if [[ "${KALSHI_ENABLED:-true}" == "true" ]]; then
+  start_svc kalshi-ingest "ploy-kalshi-ingest"
+else
+  echo "  kalshi-ingest: skipped (KALSHI_ENABLED=false)"
+fi
 start_svc reason "ploy-reason"
 start_svc notify "ploy-notify"
 start_svc sim-forward "ploy-sim forward"

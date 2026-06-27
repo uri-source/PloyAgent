@@ -13,7 +13,7 @@ from ploy_agent.common.config import settings
 class _TeeIO:
     """Mirror structlog output to stdout and the agent log file (line-safe with flush)."""
 
-    __slots__ = ("streams",)
+    __slots__ = ("streams", "__weakref__")
 
     def __init__(self, *streams: IO[Any]) -> None:
         self.streams = streams

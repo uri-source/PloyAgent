@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python deps
 COPY pyproject.toml README.md ./
+COPY config/ config/
 COPY src/ src/
 RUN pip install --no-cache-dir -e .
 

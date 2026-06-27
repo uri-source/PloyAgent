@@ -11,6 +11,7 @@ from ploy_agent.common.config import settings
 from ploy_agent.common.db import close_pool, get_pool
 from ploy_agent.common.logging_config import configure_logging, get_logger
 from ploy_agent.common.ssl_utils import httpx_verify
+from ploy_agent.kalshi.schema import schema_ready
 from ploy_agent.reasoning import repo
 from ploy_agent.reasoning.model import load_model
 from ploy_agent.reasoning.resolution import resolution_gate
@@ -38,45 +39,64 @@ async def _hydrate_last_mid(pool: Any) -> dict[str, float]:
 
 
 async def _candidate_markets(pool: Any) -> list[str]:
+    hours = max(0.25, settings.reason_candidate_max_hours)
     async with pool.acquire() as conn:
-        in_game = await conn.fetch(
+        rows = await conn.fetch(
             """
-            SELECT DISTINCT mg.market_id
-            FROM market_game_map mg
-            JOIN LATERAL (
-              SELECT 1 FROM game_state
-              WHERE game_id = mg.game_id AND ts > NOW() - INTERVAL '6 hours'
-              LIMIT 1
-            ) gs ON true
-            """
-        )
-        futures = await conn.fetch(
-            """
-            SELECT m.id AS market_id
+            SELECT DISTINCT m.id AS market_id
             FROM markets m
             JOIN LATERAL (
-              SELECT 1 FROM prices
+              SELECT ts FROM prices
               WHERE market_id = m.id AND mid IS NOT NULL
               ORDER BY ts DESC LIMIT 1
             ) lp ON true
-            LEFT JOIN market_game_map mg ON mg.market_id = m.id
             WHERE m.status IS DISTINCT FROM 'closed'
-              AND mg.market_id IS NULL
+              AND lp.ts > NOW() - ($1::text || ' hours')::interval
+            """,
+            str(hours),
+        )
+    return [str(r["market_id"]) for r in rows]
+
+
+async def _hydrate_last_kalshi_mid(pool: Any) -> dict[str, float]:
+    """Map poly_market_id -> latest Kalshi mid for active cross-venue pairs."""
+    if not settings.kalshi_enabled:
+        return {}
+    out: dict[str, float] = {}
+    async with pool.acquire() as conn:
+        if not await schema_ready(conn):
+            return {}
+        rows = await conn.fetch(
+            """
+            SELECT cvp.poly_market_id, kp.mid
+            FROM cross_venue_pairs cvp
+            JOIN LATERAL (
+              SELECT mid FROM kalshi_prices
+              WHERE ticker = cvp.kalshi_ticker AND mid IS NOT NULL
+              ORDER BY ts DESC LIMIT 1
+            ) kp ON true
+            WHERE cvp.active = TRUE
             """
         )
-    seen: set[str] = set()
-    out: list[str] = []
-    for r in in_game:
-        mid = str(r["market_id"])
-        if mid not in seen:
-            seen.add(mid)
-            out.append(mid)
-    for r in futures:
-        mid = str(r["market_id"])
-        if mid not in seen:
-            seen.add(mid)
-            out.append(mid)
+    for r in rows:
+        if r["mid"] is not None:
+            out[str(r["poly_market_id"])] = float(r["mid"])
     return out
+
+
+async def _kalshi_moved_markets(
+    pool: Any,
+    last_kalshi_mid: dict[str, float],
+) -> list[str]:
+    """Poly market ids whose paired Kalshi mid moved >= 2¢."""
+    moved: list[str] = []
+    current = await _hydrate_last_kalshi_mid(pool)
+    for poly_id, mid in current.items():
+        prev = last_kalshi_mid.get(poly_id)
+        if prev is None or abs(mid - prev) >= 0.02:
+            moved.append(poly_id)
+        last_kalshi_mid[poly_id] = mid
+    return moved
 
 
 async def _evaluate_market(
@@ -87,6 +107,8 @@ async def _evaluate_market(
     last_eval: dict[str, float],
     enabled: list[Any],
     http: httpx.AsyncClient,
+    *,
+    force: bool = False,
 ) -> None:
     now = time.monotonic()
     async with pool.acquire() as conn:
@@ -96,7 +118,7 @@ async def _evaluate_market(
         prev = last_mid.get(market_id)
         moved = prev is None or abs(mid - prev) >= 0.02
         due = (now - last_eval.get(market_id, 0.0)) >= 60.0
-        if not moved and not due:
+        if not moved and not due and not force:
             return
         last_mid[market_id] = mid
         last_eval[market_id] = now
@@ -179,6 +201,7 @@ async def _run(stop: asyncio.Event) -> None:
     pool = await get_pool()
     model = load_model()
     last_mid = await _hydrate_last_mid(pool)
+    last_kalshi_mid = await _hydrate_last_kalshi_mid(pool)
     last_eval: dict[str, float] = {}
     enabled = get_enabled(settings)
     log.info("strategies_enabled", ids=[s.id for s in enabled])
@@ -199,12 +222,13 @@ async def _run(stop: asyncio.Event) -> None:
     # Mutable list so auto-disable can swap it each tick
     active_strategies: list[Any] = list(enabled)
 
-    async def _eval_guarded(market_id: str) -> None:
+    async def _eval_guarded(market_id: str, *, force: bool = False) -> None:
         if stop.is_set():
             return
         async with sem:
             await _evaluate_market(
-                pool, market_id, model, last_mid, last_eval, active_strategies, http
+                pool, market_id, model, last_mid, last_eval, active_strategies, http,
+                force=force,
             )
 
     try:
@@ -223,7 +247,17 @@ async def _run(stop: asyncio.Event) -> None:
                         active_strategies[:] = list(enabled)
 
                     market_ids = await _candidate_markets(pool)
-                    tasks = [_eval_guarded(mid) for mid in market_ids]
+                    kalshi_moves = await _kalshi_moved_markets(pool, last_kalshi_mid)
+                    kalshi_force = set(kalshi_moves)
+                    if kalshi_moves:
+                        seen = set(market_ids)
+                        for mid in kalshi_moves:
+                            if mid not in seen:
+                                market_ids.append(mid)
+                                seen.add(mid)
+                    tasks = [
+                        _eval_guarded(mid, force=mid in kalshi_force) for mid in market_ids
+                    ]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
                     for i, r in enumerate(results):
                         if isinstance(r, Exception):

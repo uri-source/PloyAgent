@@ -97,35 +97,68 @@ async def _pipeline_status(
         }
     )
 
-    # Enrich
-    gs_age = age_sec(g_ts)
-    sp = settings.sports_provider.lower()
-    odds_like = sp in ("odds", "theodds", "oddsapi")
-    n_odds = len(settings.enrichment_odds_sport_keys())
-    n_espn = len(settings.enrichment_espn_league_keys())
+    # Enrich (optional)
+    if settings.enrichment_enabled:
+        gs_age = age_sec(g_ts)
+        sp = settings.sports_provider.lower()
+        odds_like = sp in ("odds", "theodds", "oddsapi")
+        n_odds = len(settings.enrichment_odds_sport_keys())
+        n_espn = len(settings.enrichment_espn_league_keys())
 
-    def _enrich_source_label() -> str:
-        if odds_like:
-            return f"Odds API ({n_odds} keys)" if n_odds > 1 else "Odds API"
-        if n_espn > 1:
-            return f"multi-league ESPN ({n_espn} leagues)"
-        return "ESPN"
+        def _enrich_source_label() -> str:
+            if odds_like:
+                return f"Odds API ({n_odds} keys)" if n_odds > 1 else "Odds API"
+            if n_espn > 1:
+                return f"multi-league ESPN ({n_espn} leagues)"
+            return "ESPN"
 
-    if n_game_state <= 0:
-        enrich_level, enrich_detail = "bad", "no game_state rows — is enrich running?"
-    elif gs_age is None:
-        enrich_level, enrich_detail = "unknown", "could not read latest game_state ts"
-    elif gs_age <= _GAME_STATE_FRESH_SEC:
-        enrich_level = "ok"
-        enrich_detail = f"latest {_enrich_source_label()} snapshot {int(gs_age)}s ago"
-    elif gs_age <= _GAME_STATE_FRESH_SEC * 10:
-        enrich_level = "warn"
-        enrich_detail = f"latest {_enrich_source_label()} snapshot {int(gs_age)}s ago (quiet hours / backoff ok)"
+        if n_game_state <= 0:
+            enrich_level, enrich_detail = "bad", "no game_state rows — is enrich running?"
+        elif gs_age is None:
+            enrich_level, enrich_detail = "unknown", "could not read latest game_state ts"
+        elif gs_age <= _GAME_STATE_FRESH_SEC:
+            enrich_level = "ok"
+            enrich_detail = f"latest {_enrich_source_label()} snapshot {int(gs_age)}s ago"
+        elif gs_age <= _GAME_STATE_FRESH_SEC * 10:
+            enrich_level = "warn"
+            enrich_detail = (
+                f"latest {_enrich_source_label()} snapshot {int(gs_age)}s ago (quiet hours / backoff ok)"
+            )
+        else:
+            enrich_level = "bad"
+            enrich_detail = f"latest snapshot {int(gs_age)}s ago — enrich may be stopped"
     else:
-        enrich_level = "bad"
-        enrich_detail = f"latest snapshot {int(gs_age)}s ago — enrich may be stopped"
+        enrich_level, enrich_detail = "ok", "optional — disabled (price-only stack)"
     services.append(
         {"id": "enrich", "label": "ploy-enrich", "level": enrich_level, "detail": enrich_detail}
+    )
+
+    # Kalshi ingest
+    from ploy_agent.kalshi.schema import schema_ready
+
+    if not settings.kalshi_enabled:
+        kalshi_level, kalshi_detail = "ok", "disabled (KALSHI_ENABLED=false)"
+    elif not await schema_ready(conn):
+        kalshi_level, kalshi_detail = "warn", "kalshi tables missing — run ploy-migrate"
+    else:
+        k_ts = await conn.fetchval("SELECT MAX(ts) FROM kalshi_prices")
+        k_age = age_sec(k_ts)
+        n_pairs = int(await conn.fetchval("SELECT COUNT(*) FROM cross_venue_pairs WHERE active") or 0)
+        if n_pairs <= 0:
+            kalshi_level, kalshi_detail = "warn", "no active cross_venue_pairs — run ploy-kalshi load-pairs"
+        elif k_age is None:
+            kalshi_level, kalshi_detail = "bad", "no kalshi_prices — is kalshi-ingest running?"
+        elif k_age <= 60:
+            kalshi_level = "ok"
+            kalshi_detail = f"latest Kalshi quote {int(k_age)}s ago ({n_pairs} pairs)"
+        elif k_age <= 300:
+            kalshi_level = "warn"
+            kalshi_detail = f"Kalshi quote {int(k_age)}s ago"
+        else:
+            kalshi_level = "bad"
+            kalshi_detail = f"Kalshi stale {int(k_age)}s — check kalshi-ingest"
+    services.append(
+        {"id": "kalshi", "label": "ploy-kalshi-ingest", "level": kalshi_level, "detail": kalshi_detail}
     )
 
     # Reason (fair_values)
@@ -570,6 +603,57 @@ async def sim_performance(
         sim_forward_run_hours=settings.sim_forward_run_hours,
     )
     return payload
+
+
+@app.get("/api/cross-venue/spreads")
+async def cross_venue_spreads() -> dict[str, Any]:
+    """Live Polymarket vs Kalshi mids for curated cross-venue pairs."""
+    from ploy_agent.common.cross_venue import spread_cents
+    from ploy_agent.kalshi import repo as krepo
+    from ploy_agent.kalshi.schema import schema_ready
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await schema_ready(conn):
+            return {"pairs": [], "count": 0, "note": "kalshi migration not applied"}
+        pairs = await krepo.active_pairs(conn)
+        rows: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
+        for p in pairs:
+            poly_id = str(p["poly_market_id"])
+            ticker = str(p["kalshi_ticker"])
+            omap = str(p["outcome_map"])
+            poly = await conn.fetchrow(
+                """
+                SELECT mid, depth_1c, ts FROM prices
+                WHERE market_id = $1 AND mid IS NOT NULL
+                ORDER BY ts DESC LIMIT 1
+                """,
+                poly_id,
+            )
+            kalshi = await krepo.latest_kalshi_price(conn, ticker)
+            if poly is None or kalshi is None or poly["mid"] is None or kalshi["mid"] is None:
+                continue
+            poly_mid = float(poly["mid"])
+            kalshi_mid = float(kalshi["mid"])
+            gap = spread_cents(poly_mid, kalshi_mid, outcome_map=omap)
+            poly_age = (now - poly["ts"]).total_seconds() if poly["ts"] else None
+            kalshi_age = (now - kalshi["ts"]).total_seconds() if kalshi["ts"] else None
+            rows.append(
+                {
+                    "pair_id": p["id"],
+                    "label": p["label"],
+                    "poly_market_id": poly_id,
+                    "kalshi_ticker": ticker,
+                    "outcome_map": omap,
+                    "poly_mid": round(poly_mid, 4),
+                    "kalshi_mid": round(kalshi_mid, 4),
+                    "spread_cents": round(gap, 2),
+                    "poly_age_sec": round(poly_age, 1) if poly_age is not None else None,
+                    "kalshi_age_sec": round(kalshi_age, 1) if kalshi_age is not None else None,
+                }
+            )
+    return {"pairs": rows, "count": len(rows)}
 
 
 @app.get("/api/sim/tracker")

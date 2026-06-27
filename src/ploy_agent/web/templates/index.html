@@ -324,6 +324,17 @@
   </section>
 
   <details open>
+    <summary>Cross-venue (Polymarket vs Kalshi)</summary>
+    <div class="details-body">
+      <p class="section-lead" style="margin-top:0">
+        World Cup pairs from <span class="mono">config/cross_venue/world_cup_pairs.yaml</span>.
+        Load with <span class="mono">ploy-kalshi load-pairs …</span>; ingest via <span class="mono">ploy-kalshi-ingest</span>.
+      </p>
+      <div id="cross-venue-spreads"><p class="empty">Loading spreads…</p></div>
+    </div>
+  </details>
+
+  <details open>
     <summary>Simulation (paper trading)</summary>
     <div class="details-body">
       <p class="section-lead" style="margin-top:0">
@@ -865,11 +876,41 @@
       });
     }
 
+    async function loadCrossVenueSpreads() {
+      const el = document.getElementById('cross-venue-spreads');
+      if (!el) return;
+      try {
+        const d = await (await fetch('/api/cross-venue/spreads')).json();
+        const rows = d.pairs || [];
+        if (!rows.length) {
+          el.innerHTML = '<p class="empty">No active pairs with live quotes. Configure YAML and run kalshi-ingest.</p>';
+          return;
+        }
+        let html = '<table><thead><tr><th>Pair</th><th>Poly</th><th>Kalshi</th><th>Gap</th><th>Ages (s)</th></tr></thead><tbody>';
+        rows.forEach(r => {
+          const gapColor = Math.abs(r.spread_cents) >= 8 ? 'var(--pos)' : 'var(--muted)';
+          html += `<tr>
+            <td><small>${esc(r.label || r.pair_id)}</small></td>
+            <td class="mono">${(r.poly_mid * 100).toFixed(0)}¢</td>
+            <td class="mono">${(r.kalshi_mid * 100).toFixed(0)}¢</td>
+            <td class="mono" style="color:${gapColor}">${r.spread_cents >= 0 ? '+' : ''}${r.spread_cents.toFixed(1)}¢</td>
+            <td class="mono">${r.poly_age_sec ?? '—'} / ${r.kalshi_age_sec ?? '—'}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+      } catch (e) {
+        el.innerHTML = '<p class="empty">Cross-venue spreads unavailable.</p>';
+      }
+    }
+
     sel.addEventListener('change', () => loadProfileSummary(sel.value));
+    loadCrossVenueSpreads();
     loadTracker().then(() => loadCompare());
     loadProfiles();
     setInterval(loadCompare, 60000);
     setInterval(loadTracker, 30000);
+    setInterval(loadCrossVenueSpreads, 30000);
     setInterval(() => {
       if (sel.value) loadProfileSummary(sel.value);
     }, 60000);

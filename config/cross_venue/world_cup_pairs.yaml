@@ -1,0 +1,72 @@
+# Polymarket ↔ Kalshi pairs: 2026 FIFA World Cup winner (same outcome on both venues).
+# Polymarket event slug: world-cup-winner (add to POLY_GAMMA_EVENT_SLUGS before ingest)
+# Kalshi series: KXMENWORLDCUP (tickers like KXMENWORLDCUP-26-FR)
+#
+# Load after ingest has written Polymarket rows:
+#   ploy-kalshi load-pairs config/cross_venue/world_cup_pairs.yaml
+
+pairs:
+  - id: wc26-france-winner
+    label: "France — 2026 World Cup winner"
+    poly_market_id: "558936"
+    kalshi_ticker: "KXMENWORLDCUP-26-FR"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+    notes: "Poly + Kalshi both resolve on official tournament winner"
+
+  - id: wc26-brazil-winner
+    label: "Brazil — 2026 World Cup winner"
+    poly_market_id: "558937"
+    kalshi_ticker: "KXMENWORLDCUP-26-BR"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-argentina-winner
+    label: "Argentina — 2026 World Cup winner"
+    poly_market_id: "558938"
+    kalshi_ticker: "KXMENWORLDCUP-26-AR"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-germany-winner
+    label: "Germany — 2026 World Cup winner"
+    poly_market_id: "558939"
+    kalshi_ticker: "KXMENWORLDCUP-26-DE"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-spain-winner
+    label: "Spain — 2026 World Cup winner"
+    poly_market_id: "558934"
+    kalshi_ticker: "KXMENWORLDCUP-26-ES"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-england-winner
+    label: "England — 2026 World Cup winner"
+    poly_market_id: "558935"
+    kalshi_ticker: "KXMENWORLDCUP-26-GB"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-usa-winner
+    label: "USA — 2026 World Cup winner"
+    poly_market_id: "558943"
+    kalshi_ticker: "KXMENWORLDCUP-26-US"
+    outcome_map: same
+    resolution_aligned: true
+    active: true
+
+  - id: wc26-portugal-winner
+    label: "Portugal — 2026 World Cup winner"
+    poly_market_id: "558940"
+    kalshi_ticker: "KXMENWORLDCUP-26-PT"
+    outcome_map: same
+    resolution_aligned: true
+    active: true

@@ -2,28 +2,25 @@
 
 ## Project Overview
 
-Multi-sport Polymarket edge-detection agent. Six decoupled async Python services ingest live
-market data, enrich with game state (NBA, MLB, NFL, NHL, WNBA), compute fair value via
-statistical models + optional LLM confidence, and surface ranked recommendations via Slack/Telegram
-with human approve/reject buttons. **No automated trading — recommendations only.**
-All data lives in TimescaleDB; persists across restarts via Docker volume.
+Multi-sport Polymarket edge-detection agent. Default stack is **price-only**: Polymarket +
+optional **Kalshi** cross-venue arb (World Cup pairs). ESPN/Odds enrichment is **optional**
+(`ENRICHMENT_ENABLED=false` by default). Surfaces ranked recommendations and paper-trading sim.
+**No automated trading — recommendations only.**
 
-**Current state:** Fully operational. Pipeline running, Slack + Telegram notifications live,
-8 strategies active, real-time SSE dashboard with P&L tracking, calibration curves, analytics
-with capital deployed / ROI, and paper-trading simulation with 12 threshold profiles.
+**Default stack:** Polymarket + Kalshi cross-venue arb (no ESPN). See [docs/cross-venue-world-cup.md](docs/cross-venue-world-cup.md).
 
 ---
 
 ## Architecture
 
 ```
-Polymarket WS/REST ──► ingestion   ──► prices, order_book_snapshots
-ESPN / Odds API    ──► enrichment  ──► game_state
-                       reasoning   ──► fair_values        (parallel eval, 8 markets concurrently)
-                       notifier    ──► recommendations     (5s tick, position-level dedup, alerts)
-                       sim-forward ──► sim_trades          (paper trading across profiles)
-                       web (FastAPI)◄── reads all tables   (dashboard + SSE at :8765)
-                       slack-events ◄── Slack buttons      (approve/reject at :8766)
+Polymarket WS/REST ──► ingestion        ──► prices, order_book_snapshots
+Kalshi REST poll   ──► kalshi-ingest    ──► kalshi_prices (curated pairs)
+ESPN / Odds API    ──► enrichment (opt)  ──► game_state
+                       reasoning         ──► fair_values
+                       notifier          ──► recommendations + paper sim feed
+                       sim-forward       ──► sim_trades
+                       web (FastAPI)     ◄── dashboard /paper / analytics
 ```
 
 All services are independent Python processes sharing a TimescaleDB instance. They communicate
@@ -34,7 +31,9 @@ only through the database — no message broker, no shared memory.
 | Command | Module | Role |
 |---|---|---|
 | `ploy-ingest` | `ingestion/__main__.py` | Polymarket WS listener + REST backfill |
-| `ploy-enrich` | `enrichment/__main__.py` | Multi-sport game state poller (ESPN/Odds API) |
+| `ploy-kalshi-ingest` | `kalshi/__main__.py` | Kalshi REST poll for curated cross-venue pairs |
+| `ploy-kalshi` | `kalshi/cli.py` | `load-pairs` YAML → `cross_venue_pairs` |
+| `ploy-enrich` | `enrichment/__main__.py` | Optional ESPN/Odds game state (`ENRICHMENT_ENABLED`) |
 | `ploy-reason` | `reasoning/__main__.py` | Win-prob model + confidence (parallel, sem=8) |
 | `ploy-notify` | `notifier/__main__.py` | Composite scorer, Slack/Telegram posting, P&L resolution |
 | `ploy-web` | `web/app.py` | FastAPI dashboard + SSE + analytics/accuracy/calibration APIs |
@@ -116,8 +115,11 @@ from ploy_agent.common.config import settings
 | `DATABASE_URL` | `postgresql://...localhost:5432/ploy_agent` | Port 5433 for local Docker |
 | `ANTHROPIC_API_KEY` | _(empty)_ | Falls back to statistical confidence if unset |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Do not downgrade below Sonnet |
-| `AGENT_STRATEGIES` | `baseline_model` | Comma-separated; `consensus` must be last |
-| `SPORTS_PROVIDER` | `espn` | `espn` (free) or `odds` (needs `ODDS_API_KEY`) |
+| `AGENT_STRATEGIES` | `cross_venue_arb,cross_market_arb,book_imbalance` | Default price-only; `consensus` last if enabled |
+| `ENRICHMENT_ENABLED` | `false` | Set `true` + docker compose `--profile sports` for ESPN |
+| `KALSHI_ENABLED` | `true` | Kalshi ingest + `cross_venue_arb` |
+| `CROSS_VENUE_MIN_EDGE_CENTS` | `8` | Min fee-adjusted gap for cross-venue signals |
+| `CROSS_VENUE_PAIRS_PATH` | `config/cross_venue/world_cup_pairs.yaml` | Curated Poly ↔ Kalshi pairs |
 | `ENRICHMENT_ESPN_LEAGUES` | `nba` | Multi-sport: `nba,mlb,nfl,nhl,wnba` |
 | `POLY_GAMMA_TAGS` | _(empty)_ | Comma-separated Gamma tags for market discovery |
 | `MIN_EDGE_CENTS` | `3.0` | Floor — covers 2% fee + spread |
@@ -147,6 +149,9 @@ game_state            — multi-sport game state polled every 10s (hypertable on
 fair_values           — model output per reasoning tick (hypertable on ts)
 recommendations       — ranked picks (status: pending/approved/rejected, P&L tracking)
 sim_trades            — paper-trading positions per sim profile
+kalshi_markets        — Kalshi ticker metadata
+kalshi_prices         — Kalshi quotes (hypertable on ts)
+cross_venue_pairs     — curated Polymarket market_id ↔ Kalshi ticker
 sim_profiles          — threshold configurations for paper trading
 sim_runs              — replay/forward run metadata
 market_game_map       — joins market_id → game_id (used by enrichment)
@@ -189,9 +194,8 @@ class Strategy(ABC):
 | `baseline_model` | — | Logistic regression on score diff + time remaining + possession |
 | `stale_quote` | — | Detects quotes that haven't moved despite game state change |
 | `sportsbook_consensus` | `odds_api` | Devigged sharp-book lines as fair value |
-| `cross_market_arb` | — | Flags complementary markets that don't sum to 1.0 (binary + multi-outcome) |
-| `behavior_fade` | — | Fades overreaction moves (price spike > threshold in short window) |
-| `player_adjust` | — | Adjusts probability for key player foul/injury signals |
+| `cross_market_arb` | — | Intra-Polymarket complementary markets (binary + multi-outcome) |
+| `cross_venue_arb` | `kalshi` | Polymarket vs Kalshi fee-adjusted arb (curated YAML pairs) |
 | `book_imbalance` | — | Detects directional order flow imbalance in the L2 book |
 | `consensus` | — | Ensemble: boosts signal when 2+ strategies agree on direction (**must be last**) |
 
