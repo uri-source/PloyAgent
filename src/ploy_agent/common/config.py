@@ -39,6 +39,19 @@ class Settings(BaseSettings):
             "(e.g. spacex-or-openai-higher-ipo-closing-market-cap)"
         ),
     )
+    poly_gamma_series_slugs: str = Field(
+        default="",
+        alias="POLY_GAMMA_SERIES_SLUGS",
+        description=(
+            "Comma-separated Gamma series slugs for event discovery "
+            "(e.g. soccer-fifwc for all FIFA WC game moneylines)"
+        ),
+    )
+    poly_gamma_discovery_limit: int = Field(
+        default=500,
+        alias="POLY_GAMMA_DISCOVERY_LIMIT",
+        description="Max events fetched per tag/series per discovery pass",
+    )
 
     enrichment_espn_leagues: str = Field(
         default="nba",
@@ -64,9 +77,9 @@ class Settings(BaseSettings):
     anthropic_model: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL")
 
     agent_strategies: str = Field(
-        default="cross_venue_arb,cross_market_arb,book_imbalance",
+        default="book_imbalance,cross_venue_arb,consensus",
         alias="AGENT_STRATEGIES",
-        description="Comma-separated strategy ids",
+        description="Comma-separated strategy ids; consensus must be last if enabled",
     )
 
     enrichment_enabled: bool = Field(
@@ -83,6 +96,16 @@ class Settings(BaseSettings):
     kalshi_api_key_id: str = Field(default="", alias="KALSHI_API_KEY_ID")
     kalshi_private_key_path: str = Field(default="", alias="KALSHI_PRIVATE_KEY_PATH")
     kalshi_poll_interval_sec: float = Field(default=10.0, alias="KALSHI_POLL_INTERVAL_SEC")
+    kalshi_wc_game_series: str = Field(default="KXWCGAME", alias="KALSHI_WC_GAME_SERIES")
+    cross_venue_map_min_confidence: float = Field(
+        default=0.85, alias="CROSS_VENUE_MAP_MIN_CONFIDENCE"
+    )
+    cross_venue_map_review_confidence: float = Field(
+        default=0.60, alias="CROSS_VENUE_MAP_REVIEW_CONFIDENCE"
+    )
+    cross_venue_poly_event_slug_prefix: str = Field(
+        default="fifwc", alias="CROSS_VENUE_POLY_EVENT_SLUG_PREFIX"
+    )
 
     poly_fee_rate: float = Field(default=0.02, alias="POLY_FEE_RATE")
     kalshi_fee_rate: float = Field(default=0.01, alias="KALSHI_FEE_RATE")
@@ -116,17 +139,17 @@ class Settings(BaseSettings):
         default=True, alias="AUTO_APPROVE_RECS",
         description="Auto-approve recommendations (no human gate, for paper trading / testing)",
     )
-    min_edge_cents: float = Field(default=5.0, alias="MIN_EDGE_CENTS")
+    min_edge_cents: float = Field(default=8.0, alias="MIN_EDGE_CENTS")
     entry_price_min: float = Field(
-        default=0.35, alias="ENTRY_PRICE_MIN",
+        default=0.40, alias="ENTRY_PRICE_MIN",
         description="Reject trades where market_prob < this (risk/reward floor)",
     )
     entry_price_max: float = Field(
-        default=0.65, alias="ENTRY_PRICE_MAX",
+        default=0.60, alias="ENTRY_PRICE_MAX",
         description="Reject trades where market_prob > this (risk/reward ceiling)",
     )
     min_risk_reward: float = Field(
-        default=0.30, alias="MIN_RISK_REWARD",
+        default=0.40, alias="MIN_RISK_REWARD",
         description="Hard floor on risk_reward_factor — reject trades below this",
     )
     rank_top_n: int = Field(default=5, alias="RANK_TOP_N")
@@ -172,6 +195,24 @@ class Settings(BaseSettings):
             "N hours out. 0 = disabled."
         ),
     )
+    sim_forward_profiles: str = Field(
+        default="e8_c70_m65",
+        alias="SIM_FORWARD_PROFILES",
+        description=(
+            "Comma-separated sim profile ids for ploy-sim forward (e.g. e8_c70_m65). "
+            "Empty = all profiles from init-profiles."
+        ),
+    )
+    sim_edge_persistence_ticks: int = Field(
+        default=3,
+        alias="SIM_EDGE_PERSISTENCE_TICKS",
+        description="Paper sim: require N same-direction fair_value ticks before entry (0=off)",
+    )
+    sim_edge_persistence_min_sec: float = Field(
+        default=30.0,
+        alias="SIM_EDGE_PERSISTENCE_MIN_SEC",
+        description="Min span across persistence ticks (seconds)",
+    )
 
     web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(default=8765, alias="WEB_PORT")
@@ -202,6 +243,9 @@ class Settings(BaseSettings):
     def strategy_ids(self) -> list[str]:
         return [s.strip() for s in self.agent_strategies.split(",") if s.strip()]
 
+    def sim_forward_profile_ids(self) -> list[str]:
+        return [s.strip() for s in self.sim_forward_profiles.split(",") if s.strip()]
+
     def discovery_tag_csv(self) -> str:
         """Polymarket Gamma tag list for market discovery."""
         g = self.poly_gamma_tags.strip()
@@ -211,6 +255,9 @@ class Settings(BaseSettings):
 
     def discovery_event_slug_list(self) -> list[str]:
         return [s.strip() for s in self.poly_gamma_event_slugs.split(",") if s.strip()]
+
+    def discovery_series_slug_list(self) -> list[str]:
+        return [s.strip() for s in self.poly_gamma_series_slugs.split(",") if s.strip()]
 
     def enrichment_espn_league_keys(self) -> list[str]:
         keys = [x.strip().lower() for x in self.enrichment_espn_leagues.split(",") if x.strip()]

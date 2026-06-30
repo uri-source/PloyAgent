@@ -130,13 +130,23 @@ You should see `ingest`, `enrich`, `reason`, `notify`, `sim-forward`, `web`, `ti
 On your **laptop** (new terminal, keep VPS running):
 
 ```bash
-ssh -N -L 8765:127.0.0.1:8765 root@YOUR_VPS_IP
+ssh -N -L 18875:127.0.0.1:8765 root@YOUR_VPS_IP
 ```
 
-Leave that open. In the browser:
+Use local port **18875** (not 8765) so you do not hit a **local** Docker stack if you also run PloyAgent on your Mac. Leave the tunnel open. In the browser:
 
-- Dashboard: http://127.0.0.1:8765/
-- **Paper trading:** http://127.0.0.1:8765/paper
+- Dashboard: http://127.0.0.1:18875/
+- **Paper trading:** http://127.0.0.1:18875/paper
+
+Confirm you are on the VPS: **Paper trading** should show the same run id as on the server (`curl` below). If you see an old run with thousands of trades, you are on local Docker — stop it (`docker compose down`) or keep using port 18875 for the tunnel only.
+
+**On the VPS** (sanity check):
+
+```bash
+curl -s http://127.0.0.1:8765/api/sim/tracker | python3 -m json.tool | head -20
+```
+
+Compare `current_run.id` with what the browser shows.
 
 ---
 
@@ -198,7 +208,8 @@ If you want a real URL without opening port 8765 to the world, add **Cloudflare 
 | No prices / stale ingest | EU VPS; check `ingest` logs for blocked network; see `docs/local-monitoring.md` |
 | `sim-forward` exits | `docker compose ... logs sim-forward`; ensure `init-profiles` ran |
 | DB auth errors on sim | Pull latest repo (prod compose must pass `POSTGRES_PASSWORD` to `sim-forward`) |
-| Tunnel drops | Re-run SSH `-L 8765:127.0.0.1:8765` |
+| Tunnel drops | Re-run SSH `-L 18875:127.0.0.1:8765` |
+| Browser shows wrong run / old Kelly Oubre rows | Local Docker on `:8765`; use tunnel port **18875** or `docker compose down` locally |
 
 ---
 

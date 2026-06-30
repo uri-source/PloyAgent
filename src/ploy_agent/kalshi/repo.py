@@ -108,13 +108,20 @@ async def upsert_pair(
     resolution_aligned: bool,
     notes: str | None,
     active: bool,
+    match_confidence: float | None = None,
+    match_source: str = "manual",
+    kalshi_event_ticker: str | None = None,
+    poly_event_slug: str | None = None,
+    review_notes: str | None = None,
 ) -> None:
     await conn.execute(
         """
         INSERT INTO cross_venue_pairs (
           id, label, poly_market_id, kalshi_ticker, outcome_map,
-          resolution_aligned, notes, active, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+          resolution_aligned, notes, active, updated_at,
+          match_confidence, match_source, kalshi_event_ticker,
+          poly_event_slug, review_notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11, $12, $13)
         ON CONFLICT (id) DO UPDATE SET
           label = EXCLUDED.label,
           poly_market_id = EXCLUDED.poly_market_id,
@@ -123,7 +130,12 @@ async def upsert_pair(
           resolution_aligned = EXCLUDED.resolution_aligned,
           notes = EXCLUDED.notes,
           active = EXCLUDED.active,
-          updated_at = NOW()
+          updated_at = NOW(),
+          match_confidence = EXCLUDED.match_confidence,
+          match_source = EXCLUDED.match_source,
+          kalshi_event_ticker = EXCLUDED.kalshi_event_ticker,
+          poly_event_slug = EXCLUDED.poly_event_slug,
+          review_notes = EXCLUDED.review_notes
         """,
         pair_id,
         label,
@@ -133,6 +145,11 @@ async def upsert_pair(
         resolution_aligned,
         notes,
         active,
+        match_confidence,
+        match_source,
+        kalshi_event_ticker,
+        poly_event_slug,
+        review_notes,
     )
 
 

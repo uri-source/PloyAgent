@@ -66,6 +66,27 @@ def test_try_enter_rejects_missing_end_date_when_horizon_set(monkeypatch: pytest
     assert port.try_enter(_sig(5.0)) is None
 
 
+def test_try_enter_rejects_non_persistent_edge() -> None:
+    p = SimProfile(id="p1", min_edge_cents=3, min_confidence=0.5, min_model_prob=0.5)
+    port = ProfilePortfolio(p)
+    base = _sig(5.0)
+    sig = SimSignal(
+        ts=base.ts,
+        market_id=base.market_id,
+        strategy_id=base.strategy_id,
+        category=base.category,
+        question=base.question,
+        model_prob=base.model_prob,
+        market_prob=base.market_prob,
+        edge_cents=base.edge_cents,
+        confidence=base.confidence,
+        score=base.score,
+        end_date=base.end_date,
+        edge_persistent=False,
+    )
+    assert port.try_enter(sig) is None
+
+
 def test_try_enter_ignores_horizon_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "sim_max_hours_to_resolution", 0.0)
     p = SimProfile(id="p1", min_edge_cents=3, min_confidence=0.5, min_model_prob=0.5)

@@ -51,6 +51,8 @@ class ProfilePortfolio:
             return None
         if not passes_sim_resolution_horizon(signal.end_date, now=signal.ts):
             return None
+        if not signal.edge_persistent:
+            return None
         key = _pos_key(self.profile.id, signal.market_id)
         if key in self.state.open_by_key:
             return None

@@ -115,7 +115,7 @@ from ploy_agent.common.config import settings
 | `DATABASE_URL` | `postgresql://...localhost:5432/ploy_agent` | Port 5433 for local Docker |
 | `ANTHROPIC_API_KEY` | _(empty)_ | Falls back to statistical confidence if unset |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Do not downgrade below Sonnet |
-| `AGENT_STRATEGIES` | `cross_venue_arb,cross_market_arb,book_imbalance` | Default price-only; `consensus` last if enabled |
+| `AGENT_STRATEGIES` | `book_imbalance,cross_venue_arb,consensus` | WC high-conviction stack; `consensus` last |
 | `ENRICHMENT_ENABLED` | `false` | Set `true` + docker compose `--profile sports` for ESPN |
 | `KALSHI_ENABLED` | `true` | Kalshi ingest + `cross_venue_arb` |
 | `CROSS_VENUE_MIN_EDGE_CENTS` | `8` | Min fee-adjusted gap for cross-venue signals |

@@ -6,6 +6,7 @@ import pytest
 
 from ploy_agent.ingestion.gamma import (
     discover_markets_by_event_slugs,
+    discover_markets_by_series_slugs,
     merge_market_bundles,
 )
 
@@ -34,6 +35,35 @@ async def test_discover_markets_by_event_slugs() -> None:
     )
     assert len(bundles) == 1
     assert bundles[0]["market"]["id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_discover_markets_by_series_slugs() -> None:
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = [
+        {
+            "id": "ev1",
+            "slug": "fifwc-fra-swe-2026-06-30",
+            "markets": [
+                {
+                    "id": "m1",
+                    "clobTokenIds": '["yes1","no1"]',
+                    "active": True,
+                },
+                {
+                    "id": "m2",
+                    "clobTokenIds": '["yes2","no2"]',
+                    "active": True,
+                },
+            ],
+        }
+    ]
+    client = AsyncMock()
+    client.get.return_value = response
+    bundles = await discover_markets_by_series_slugs(client, series_slugs=["soccer-fifwc"])
+    assert len(bundles) == 2
+    assert client.get.call_args.kwargs["params"]["series_slug"] == "soccer-fifwc"
 
 
 def test_merge_market_bundles_dedupes() -> None:

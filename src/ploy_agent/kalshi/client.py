@@ -82,5 +82,40 @@ async def fetch_orderbook(http: httpx.AsyncClient, ticker: str) -> dict[str, Any
         return None
 
 
+async def list_markets(
+    http: httpx.AsyncClient,
+    *,
+    series_ticker: str,
+    status: str = "open",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Paginated GET /markets for a Kalshi series."""
+    out: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        params: dict[str, Any] = {
+            "series_ticker": series_ticker,
+            "status": status,
+            "limit": limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        url = f"{_base()}/markets"
+        try:
+            r = await http.get(url, params=params, timeout=30.0)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            log.warning("kalshi_list_markets_failed", series=series_ticker, error=str(e))
+            break
+        markets = data.get("markets") or []
+        if isinstance(markets, list):
+            out.extend(m for m in markets if isinstance(m, dict))
+        cursor = data.get("cursor")
+        if not cursor:
+            break
+    return out
+
+
 def new_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(verify=httpx_verify(), headers={"Accept": "application/json"})

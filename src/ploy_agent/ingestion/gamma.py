@@ -28,32 +28,73 @@ async def fetch_sports_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def _bundles_from_events(events: list[Any], seen: set[str]) -> list[dict[str, Any]]:
+    markets_out: list[dict[str, Any]] = []
+    for ev in events:
+        for m in ev.get("markets") or []:
+            mid = str(m.get("id") or "")
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            markets_out.append({"event": ev, "market": m})
+    return markets_out
+
+
+async def _fetch_event_bundles(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+    seen: set[str],
+) -> list[dict[str, Any]]:
+    base = settings.gamma_base_url.rstrip("/")
+    r = await client.get(f"{base}/events", params=params, timeout=60.0)
+    r.raise_for_status()
+    events = r.json()
+    if not isinstance(events, list):
+        return []
+    return _bundles_from_events(events, seen)
+
+
 async def discover_markets_by_event_slugs(
     client: httpx.AsyncClient, slugs: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """Pull active markets for explicit Gamma event slugs (IPO, politics, etc.)."""
-    base = settings.gamma_base_url.rstrip("/")
     slug_list = slugs if slugs is not None else settings.discovery_event_slug_list()
     markets_out: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for slug in slug_list:
-        r = await client.get(
-            f"{base}/events",
-            params={"slug": slug, "active": "true"},
-            timeout=60.0,
+        markets_out.extend(
+            await _fetch_event_bundles(
+                client,
+                {"slug": slug, "active": "true"},
+                seen,
+            )
         )
-        r.raise_for_status()
-        events = r.json()
-        if not isinstance(events, list):
-            continue
-        for ev in events:
-            for m in ev.get("markets") or []:
-                mid = str(m.get("id") or "")
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                markets_out.append({"event": ev, "market": m})
+    return markets_out
+
+
+async def discover_markets_by_series_slugs(
+    client: httpx.AsyncClient, series_slugs: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Pull active markets for all events in Gamma series (e.g. soccer-fifwc)."""
+    slug_list = series_slugs if series_slugs is not None else settings.discovery_series_slug_list()
+    markets_out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    limit = max(1, settings.poly_gamma_discovery_limit)
+
+    for slug in slug_list:
+        markets_out.extend(
+            await _fetch_event_bundles(
+                client,
+                {
+                    "series_slug": slug,
+                    "closed": "false",
+                    "active": "true",
+                    "limit": limit,
+                },
+                seen,
+            )
+        )
     return markets_out
 
 
@@ -74,10 +115,11 @@ def merge_market_bundles(
 
 
 async def discover_markets(client: httpx.AsyncClient) -> list[dict[str, Any]]:
-    """Tag-based discovery plus any pinned event slugs."""
+    """Tag-, series-, and pinned-slug discovery."""
     by_tags = await discover_markets_by_tags(client)
+    by_series = await discover_markets_by_series_slugs(client)
     by_slugs = await discover_markets_by_event_slugs(client)
-    return merge_market_bundles(by_tags, by_slugs)
+    return merge_market_bundles(by_tags, by_series, by_slugs)
 
 
 async def discover_markets_by_tags(client: httpx.AsyncClient) -> list[dict[str, Any]]:
@@ -86,33 +128,22 @@ async def discover_markets_by_tags(client: httpx.AsyncClient) -> list[dict[str, 
     Uses POLY_GAMMA_TAGS, or POLY_NBA_TAGS if POLY_GAMMA_TAGS is empty
     (comma-separated slugs or numeric ids).
     """
-    base = settings.gamma_base_url.rstrip("/")
     tags = [t.strip() for t in settings.discovery_tag_csv().split(",") if t.strip()]
     markets_out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    limit = max(1, settings.poly_gamma_discovery_limit)
 
     for tag in tags:
         params: dict[str, Any] = {
             "closed": "false",
             "active": "true",
-            "limit": 200,
+            "limit": limit,
         }
         if tag.isdigit():
             params["tag_id"] = int(tag)
         else:
             params["tag_slug"] = tag
-        r = await client.get(f"{base}/events", params=params, timeout=60.0)
-        r.raise_for_status()
-        events = r.json()
-        if not isinstance(events, list):
-            continue
-        for ev in events:
-            for m in ev.get("markets") or []:
-                mid = str(m.get("id") or "")
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                markets_out.append({"event": ev, "market": m})
+        markets_out.extend(await _fetch_event_bundles(client, params, seen))
     return markets_out
 
 

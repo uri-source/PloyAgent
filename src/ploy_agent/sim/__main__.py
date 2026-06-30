@@ -23,7 +23,7 @@ from ploy_agent.sim.metrics import (
     summarize_trades,
     trades_from_rows,
 )
-from ploy_agent.sim.profiles import default_profile_grid
+from ploy_agent.sim.profiles import default_profile_grid, high_conviction_profiles
 from ploy_agent.sim.replay import run_replay
 
 log = get_logger("sim")
@@ -37,7 +37,7 @@ def _parse_dt(s: str) -> datetime:
 
 
 async def cmd_init_profiles(conn: asyncpg.Connection, subset: bool) -> None:
-    profiles = default_profile_grid(subset=subset)
+    profiles = default_profile_grid(subset=subset) + high_conviction_profiles()
     for p in profiles:
         await sim_repo.upsert_profile(conn, p)
     print(f"Upserted {len(profiles)} simulation profiles.")
@@ -161,9 +161,10 @@ async def _amain(args: argparse.Namespace) -> None:
             except (NotImplementedError, AttributeError):
                 pass
         try:
+            profile_csv = args.profiles or settings.sim_forward_profiles or None
             async with pool.acquire() as conn:
                 profiles = await sim_repo.list_profiles(
-                    conn, args.profiles.split(",") if args.profiles else None
+                    conn, profile_csv.split(",") if profile_csv else None
                 )
             if not profiles:
                 print("No profiles. Run: ploy-sim init-profiles")

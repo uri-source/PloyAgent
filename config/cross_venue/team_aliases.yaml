@@ -1,0 +1,48 @@
+# FIFA / Kalshi 3-letter codes → canonical name (lowercase)
+aliases:
+  jor: jordan
+  arg: argentina
+  alg: algeria
+  aut: austria
+  col: colombia
+  gha: ghana
+  por: portugal
+  cro: croatia
+  bel: belgium
+  sen: senegal
+  cpv: cape verde
+  usa: united states
+  us: united states
+  eng: england
+  gb: england
+  gbr: england
+  fra: france
+  bra: brazil
+  ger: germany
+  deu: germany
+  de: germany
+  esp: spain
+  ned: netherlands
+  nld: netherlands
+  uru: uruguay
+  mex: mexico
+  jap: japan
+  jpn: japan
+  kor: south korea
+  ksa: saudi arabia
+  mar: morocco
+  tun: tunisia
+  egy: egypt
+  ecu: ecuador
+  par: paraguay
+  chi: chile
+  per: peru
+  can: canada
+  aus: australia
+  nzl: new zealand
+  sui: switzerland
+  che: switzerland
+  wal: wales
+  sco: scotland
+  irn: iran
+  qat: qatar

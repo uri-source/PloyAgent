@@ -71,6 +71,47 @@ async def create_run(conn: asyncpg.Connection, mode: str, notes: str | None = No
     )
 
 
+async def edge_persistence_ok(
+    conn: asyncpg.Connection,
+    *,
+    market_id: str,
+    strategy_id: str,
+    edge_cents: float,
+    ticks: int,
+    min_sec: float,
+) -> bool:
+    """True when the last N fair_value ticks agree on edge direction over min_sec."""
+    if ticks <= 0:
+        return True
+    rows = await conn.fetch(
+        """
+        SELECT edge_cents, ts
+        FROM fair_values
+        WHERE market_id = $1 AND strategy_id = $2
+        ORDER BY ts DESC
+        LIMIT $3
+        """,
+        market_id,
+        strategy_id,
+        ticks,
+    )
+    if len(rows) < ticks:
+        return False
+    sign = 1 if edge_cents > 0 else -1 if edge_cents < 0 else 0
+    if sign == 0:
+        return False
+    for r in rows:
+        e = float(r["edge_cents"])
+        if (e > 0 and sign != 1) or (e < 0 and sign != -1):
+            return False
+    newest = rows[0]["ts"]
+    oldest = rows[-1]["ts"]
+    if newest is None or oldest is None:
+        return False
+    span = abs((newest - oldest).total_seconds())
+    return span >= min_sec
+
+
 async def finish_run(conn: asyncpg.Connection, run_id: int) -> None:
     await conn.execute(
         "UPDATE sim_runs SET ended_at = NOW() WHERE id = $1",

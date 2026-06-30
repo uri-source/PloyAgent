@@ -104,6 +104,21 @@ async def forward_tick(
     signals = await _enrich_categories(
         conn, [_pick_to_signal(p, now) for p in picks]
     )
+    ticks = settings.sim_edge_persistence_ticks
+    min_sec = settings.sim_edge_persistence_min_sec
+    if ticks > 0:
+        enriched: list[SimSignal] = []
+        for sig in signals:
+            ok = await sim_repo.edge_persistence_ok(
+                conn,
+                market_id=sig.market_id,
+                strategy_id=sig.strategy_id,
+                edge_cents=sig.edge_cents,
+                ticks=ticks,
+                min_sec=min_sec,
+            )
+            enriched.append(replace(sig, edge_persistent=ok))
+        signals = enriched
 
     for sig in signals:
         resolved = sig.market_id in outcomes

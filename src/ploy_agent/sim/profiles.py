@@ -24,3 +24,16 @@ def default_profile_grid(*, subset: bool = False) -> list[SimProfile]:
                     )
                 )
     return out
+
+
+def high_conviction_profiles() -> list[SimProfile]:
+    """Consensus-only sim profiles for WC + Kalshi stack."""
+    return [
+        SimProfile(
+            id="e8_c70_m65",
+            min_edge_cents=8.0,
+            min_confidence=0.70,
+            min_model_prob=0.65,
+            strategy_ids=("consensus",),
+        ),
+    ]

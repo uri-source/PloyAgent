@@ -16,6 +16,8 @@ Keep `ploy-ingest`, `ploy-reason`, and `ploy-notify` running so `top_picks` feed
 
 Default forward run length: `SIM_FORWARD_RUN_HOURS` (14 days).
 
+Run a **single profile** (cleaner Decision Ledger): set `SIM_FORWARD_PROFILES=e5_c65_m60` or `ploy-sim forward --profiles e5_c65_m60`. The default grid runs up to 36 profiles in parallel — one market can appear many times.
+
 ### Short-dated markets only
 
 Set `SIM_MAX_HOURS_TO_RESOLUTION` (e.g. `48`) to restrict **paper sim entries** to markets whose `end_date` is within N hours. Unknown `end_date` is skipped. This is sim-only — live recommendations and Slack are unchanged.
